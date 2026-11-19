@@ -174,26 +174,25 @@ jobs:
                 --arg description "${description}" \
                 --argjson sensitive "${sensitive}" \
                 '{data:{id:$id,type:"vars",attributes:{key:$key,value:$value,description:$description,category:"terraform",hcl:false,sensitive:$sensitive}}}')"
-              curl --fail --silent --show-error \
+              curl --fail-with-body --silent --show-error \
                 --request PATCH \
                 --header "${auth_header}" \
                 --header "${content_header}" \
                 --data "${payload}" \
-                "${api}/vars/${variable_id}" >/dev/null
+                "${api}/workspaces/${target_id}/vars/${variable_id}" >/dev/null
             else
               payload="$(jq -n \
-                --arg workspace_id "${target_id}" \
                 --arg key "${key}" \
                 --arg value "${value}" \
                 --arg description "${description}" \
                 --argjson sensitive "${sensitive}" \
-                '{data:{type:"vars",attributes:{key:$key,value:$value,description:$description,category:"terraform",hcl:false,sensitive:$sensitive},relationships:{workspace:{data:{id:$workspace_id,type:"workspaces"}}}}}')"
-              curl --fail --silent --show-error \
+                '{data:{type:"vars",attributes:{key:$key,value:$value,description:$description,category:"terraform",hcl:false,sensitive:$sensitive}}}')"
+              curl --fail-with-body --silent --show-error \
                 --request POST \
                 --header "${auth_header}" \
                 --header "${content_header}" \
                 --data "${payload}" \
-                "${api}/vars" >/dev/null
+                "${api}/workspaces/${target_id}/vars" >/dev/null
             fi
           }
 
