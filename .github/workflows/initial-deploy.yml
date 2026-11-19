@@ -85,6 +85,7 @@ jobs:
 
           source_json="$(api_get "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${SOURCE_WORKSPACE}")"
           source_id="$(jq -r '.data.id' <<<"${source_json}")"
+          source_project_id="$(jq -r '.data.relationships.project.data.id' <<<"${source_json}")"
           source_terraform_version="$(jq -r '.data.attributes["terraform-version"]' <<<"${source_json}")"
           source_execution_mode="$(jq -r '.data.attributes["execution-mode"] // empty' <<<"${source_json}")"
           source_agent_pool_id="$(jq -r '.data.relationships["agent-pool"].data.id // empty' <<<"${source_json}")"
@@ -116,8 +117,9 @@ jobs:
               >/tmp/target-workspace.json
             echo "Created inert HCP Terraform workspace ${TF_WORKSPACE}"
           elif [[ "${workspace_status}" == "200" ]]; then
-            [[ "$(jq -r '.data.relationships.project.data.id' /tmp/target-workspace.json)" == "${project_id}" ]] || {
-              echo "Existing target workspace belongs to a different HCP Terraform project" >&2
+            target_existing_project_id="$(jq -r '.data.relationships.project.data.id' /tmp/target-workspace.json)"
+            [[ "${target_existing_project_id}" == "${project_id}" || "${target_existing_project_id}" == "${source_project_id}" ]] || {
+              echo "Existing target workspace belongs to an unexpected HCP Terraform project" >&2
               exit 1
             }
             [[ "$(jq -r '.data.attributes["resource-count"]' /tmp/target-workspace.json)" == "0" ]] || {
@@ -153,6 +155,7 @@ jobs:
           fi
 
           target_id="$(jq -r '.data.id' /tmp/target-workspace.json)"
+          target_current_project_id="$(jq -r '.data.relationships.project.data.id' /tmp/target-workspace.json)"
           [[ "$(jq -r '.data.attributes["execution-mode"] // empty' /tmp/target-workspace.json)" == "agent" ]]
           [[ "$(jq -r '.data.relationships["agent-pool"].data.id // empty' /tmp/target-workspace.json)" == "${source_agent_pool_id}" ]]
 
@@ -226,6 +229,29 @@ jobs:
           target_varsets_json="$(api_get "${api}/workspaces/${target_id}/varsets")"
           target_has_source_varset="$(jq --arg id "${source_varset_id}" '[.data[]? | select(.id == $id)] | length' <<<"${target_varsets_json}")"
           detach_source_varset=false
+          restore_target_project=false
+
+          if [[ "${target_current_project_id}" == "${source_project_id}" ]]; then
+            restore_target_project=true
+          fi
+
+          if [[ "${target_has_source_varset}" == "0" && "${target_current_project_id}" != "${source_project_id}" ]]; then
+            move_payload="$(jq -n \
+              --arg workspace_id "${target_id}" \
+              --arg project_id "${source_project_id}" \
+              '{data:{id:$workspace_id,type:"workspaces",relationships:{project:{data:{id:$project_id,type:"projects"}}}}}')"
+            curl --fail-with-body --silent --show-error \
+              --request PATCH \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${move_payload}" \
+              "${api}/workspaces/${target_id}" >/dev/null
+            restore_target_project=true
+            target_current_project_id="${source_project_id}"
+            target_varsets_json="$(api_get "${api}/workspaces/${target_id}/varsets")"
+            target_has_source_varset="$(jq --arg id "${source_varset_id}" '[.data[]? | select(.id == $id)] | length' <<<"${target_varsets_json}")"
+            echo "Temporarily moved ${TF_WORKSPACE} to the source project for credential bootstrap"
+          fi
 
           if [[ "${target_has_source_varset}" == "1" ]]; then
             echo "${SOURCE_VARIABLE_SET} is already available to ${TF_WORKSPACE} through inherited scope"
@@ -249,6 +275,8 @@ jobs:
             echo "source_state_id=${source_state_id}"
             echo "agent_pool_id=${source_agent_pool_id}"
             echo "detach_source_varset=${detach_source_varset}"
+            echo "restore_target_project=${restore_target_project}"
+            echo "target_project_id=${project_id}"
           } >>"${GITHUB_OUTPUT}"
           rm -f /tmp/target-state.json /tmp/target-workspace.json
 
@@ -281,7 +309,7 @@ jobs:
           comment: Store existing OCI credentials in Vault without changing OCI
 
       - name: Detach broad migration variable set
-        if: steps.bootstrap.outputs.detach_source_varset == 'true'
+        if: ${{ always() && steps.bootstrap.outputs.detach_source_varset == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -302,6 +330,30 @@ jobs:
             --data "${payload}" \
             "${api}/varsets/${varset_id}/relationships/workspaces" >/dev/null
           echo "Detached ${SOURCE_VARIABLE_SET}; subsequent runs use Vault through the self-hosted agent"
+
+      - name: Restore repository-owned HCP Terraform project
+        if: ${{ always() && steps.bootstrap.outputs.restore_target_project == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+          target_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+          target_id="$(jq -r '.data.id' <<<"${target_json}")"
+          move_payload="$(jq -n \
+            --arg workspace_id "${target_id}" \
+            --arg project_id "${{ steps.bootstrap.outputs.target_project_id }}" \
+            '{data:{id:$workspace_id,type:"workspaces",relationships:{project:{data:{id:$project_id,type:"projects"}}}}}')"
+          curl --fail-with-body --silent --show-error \
+            --request PATCH \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            --data "${move_payload}" \
+            "${api}/workspaces/${target_id}" >/dev/null
+          restored_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/workspaces/${target_id}")"
+          [[ "$(jq -r '.data.relationships.project.data.id' <<<"${restored_json}")" == "${{ steps.bootstrap.outputs.target_project_id }}" ]]
+          echo "Restored ${TF_WORKSPACE} to HCP Terraform project ${TF_PROJECT_NAME}"
 
       - name: Stage import-only configuration
         shell: bash
