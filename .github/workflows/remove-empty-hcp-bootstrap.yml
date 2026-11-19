@@ -34,68 +34,79 @@ jobs:
           auth_header="Authorization: Bearer ${TF_API_TOKEN}"
           content_header="Content-Type: application/vnd.api+json"
 
-          workspace_json="$(curl --fail --silent --show-error \
+          projects_json="$(curl --fail --silent --show-error \
             --header "${auth_header}" \
             --header "${content_header}" \
-            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
-          workspace_id="$(jq -r '.data.id' <<<"${workspace_json}")"
-          project_id="$(jq -r '.data.relationships.project.data.id' <<<"${workspace_json}")"
-
-          [[ "$(jq -r '.data.attributes.name' <<<"${workspace_json}")" == "${TF_WORKSPACE}" ]]
-          [[ "$(jq -r '.data.attributes["resource-count"]' <<<"${workspace_json}")" == "0" ]]
-
-          project_json="$(curl --fail --silent --show-error \
-            --header "${auth_header}" \
-            --header "${content_header}" \
-            "${api}/projects/${project_id}")"
+            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/projects?page%5Bsize%5D=100")"
+          project_json="$(jq --arg name "${TF_PROJECT_NAME}" '.data[]? | select(.attributes.name == $name) | {data:.}' <<<"${projects_json}")"
+          project_id="$(jq -r '.data.id // empty' <<<"${project_json}")"
+          [[ -n "${project_id}" ]] || {
+            echo "HCP Terraform project ${TF_PROJECT_NAME} is already absent"
+            exit 0
+          }
           [[ "$(jq -r '.data.attributes.name' <<<"${project_json}")" == "${TF_PROJECT_NAME}" ]]
 
-          state_status="$(curl --silent --show-error \
-            --output /tmp/current-state.json \
+          workspace_status="$(curl --silent --show-error \
+            --output /tmp/workspace.json \
             --write-out '%{http_code}' \
             --header "${auth_header}" \
             --header "${content_header}" \
-            "${api}/workspaces/${workspace_id}/current-state-version")"
-          [[ "${state_status}" == "404" ]] || {
-            echo "Refusing removal: workspace has a current state version" >&2
-            exit 1
-          }
+            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
 
-          runs_json="$(curl --fail --silent --show-error \
-            --header "${auth_header}" \
-            --header "${content_header}" \
-            "${api}/workspaces/${workspace_id}/runs?page%5Bsize%5D=100")"
-          [[ "$(jq '.data | length' <<<"${runs_json}")" == "0" ]] || {
-            echo "Refusing removal: workspace has Terraform runs" >&2
-            exit 1
-          }
+          if [[ "${workspace_status}" == "200" ]]; then
+            workspace_json="$(cat /tmp/workspace.json)"
+            workspace_id="$(jq -r '.data.id' <<<"${workspace_json}")"
+            [[ "$(jq -r '.data.relationships.project.data.id' <<<"${workspace_json}")" == "${project_id}" ]]
+            [[ "$(jq -r '.data.attributes.name' <<<"${workspace_json}")" == "${TF_WORKSPACE}" ]]
+            [[ "$(jq -r '.data.attributes["resource-count"]' <<<"${workspace_json}")" == "0" ]]
 
-          vars_json="$(curl --fail --silent --show-error \
-            --header "${auth_header}" \
-            --header "${content_header}" \
-            "${api}/workspaces/${workspace_id}/vars")"
-          [[ "$(jq '.data | length' <<<"${vars_json}")" == "0" ]] || {
-            echo "Refusing removal: workspace has workspace-local variables" >&2
-            exit 1
-          }
-
-          curl --fail --silent --show-error \
-            --request DELETE \
-            --header "${auth_header}" \
-            --header "${content_header}" \
-            "${api}/workspaces/${workspace_id}"
-          echo "Removed empty HCP Terraform workspace ${TF_WORKSPACE}"
-
-          for _ in $(seq 1 15); do
-            project_workspaces_json="$(curl --fail --silent --show-error \
+            state_status="$(curl --silent --show-error \
+              --output /tmp/current-state.json \
+              --write-out '%{http_code}' \
               --header "${auth_header}" \
               --header "${content_header}" \
-              "${api}/projects/${project_id}/workspaces?page%5Bsize%5D=100")"
-            [[ "$(jq '.data | length' <<<"${project_workspaces_json}")" == "0" ]] && break
-            sleep 2
-          done
+              "${api}/workspaces/${workspace_id}/current-state-version")"
+            [[ "${state_status}" == "404" ]] || {
+              echo "Refusing removal: workspace has a current state version" >&2
+              exit 1
+            }
 
-          [[ "$(jq '.data | length' <<<"${project_workspaces_json}")" == "0" ]] || {
+            runs_json="$(curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/workspaces/${workspace_id}/runs?page%5Bsize%5D=100")"
+            [[ "$(jq '.data | length' <<<"${runs_json}")" == "0" ]] || {
+              echo "Refusing removal: workspace has Terraform runs" >&2
+              exit 1
+            }
+
+            vars_json="$(curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/workspaces/${workspace_id}/vars")"
+            [[ "$(jq '.data | length' <<<"${vars_json}")" == "0" ]] || {
+              echo "Refusing removal: workspace has workspace-local variables" >&2
+              exit 1
+            }
+
+            curl --fail --silent --show-error \
+              --request DELETE \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/workspaces/${workspace_id}"
+            echo "Removed empty HCP Terraform workspace ${TF_WORKSPACE}"
+          elif [[ "${workspace_status}" == "404" ]]; then
+            echo "HCP Terraform workspace ${TF_WORKSPACE} is already absent"
+          else
+            cat /tmp/workspace.json >&2
+            exit 1
+          fi
+
+          organization_workspaces_json="$(curl --fail --silent --show-error \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces?page%5Bsize%5D=100")"
+          [[ "$(jq --arg id "${project_id}" '[.data[]? | select(.relationships.project.data.id == $id)] | length' <<<"${organization_workspaces_json}")" == "0" ]] || {
             echo "Refusing project removal: project still contains workspaces" >&2
             exit 1
           }
@@ -107,4 +118,4 @@ jobs:
             "${api}/projects/${project_id}"
           echo "Removed empty HCP Terraform project ${TF_PROJECT_NAME}"
 
-          rm -f /tmp/current-state.json
+          rm -f /tmp/current-state.json /tmp/workspace.json
