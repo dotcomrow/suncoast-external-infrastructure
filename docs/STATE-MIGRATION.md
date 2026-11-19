@@ -70,10 +70,14 @@ again because HCP Terraform does not return their values through its API.
 
 ## Phase 2: capture and verify source identity
 
-In HCP Terraform, record the current source state version and the IDs for every
-address listed above. Record the existing VM OCID, reserved public-IP OCID,
-public IP address, private IP address, VCN, subnet, route table, security list,
-and internet gateway.
+Run the `Audit HCP Terraform state migration` workflow. It reports workspace
+metadata, variable names, variable-set names, managed OCI/TLS resource
+addresses, and state-version identifiers without downloading raw state or
+printing sensitive values.
+
+In HCP Terraform, record the current source state version. In OCI, record the
+existing VM OCID, reserved public-IP OCID, public IP address, private IP
+address, VCN, subnet, route table, security list, and internet gateway.
 
 Verify the VM and PostgreSQL are healthy before proceeding. This is the
 rollback baseline.
@@ -84,8 +88,10 @@ rollback baseline.
 2. Confirm it has no current or queued runs.
 3. Copy `migration/imports.tf.example` into the target `terraform/` directory as
    `imports.tf`.
-4. Fill each import ID using the source state values. Do not guess IDs from
-   display names.
+4. The migration data sources look up the existing OCI objects by their
+   historical display names. Every lookup uses `one(...)` and therefore fails
+   unless the match is unique. Compare the discovered IDs with the OCI values
+   recorded in Phase 2.
 5. Upload the target configuration and create a speculative plan.
 6. The plan must contain imports only. It must contain zero create, update,
    replace, and delete operations against OCI.

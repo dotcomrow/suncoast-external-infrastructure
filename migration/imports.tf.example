@@ -1,37 +1,94 @@
 # Copy this file to terraform/imports.tf only for the reviewed migration run.
-# Replace every placeholder with the exact OCID from the k8s-cms state.
+# These read-only OCI lookups discover the existing objects by their historical
+# unique display names. Every `one(...)` call fails safely unless exactly one
+# matching object exists.
+
+data "oci_core_vcns" "migration_directus_db" {
+  compartment_id = var.oci_compartment_ocid
+  display_name   = "${var.db_instance_name}-vcn"
+  state          = "AVAILABLE"
+}
+
+locals {
+  migration_directus_db_vcn = one(data.oci_core_vcns.migration_directus_db.virtual_networks)
+}
+
+data "oci_core_internet_gateways" "migration_directus_db" {
+  compartment_id = var.oci_compartment_ocid
+  display_name   = "${var.db_instance_name}-igw"
+  state          = "AVAILABLE"
+  vcn_id         = local.migration_directus_db_vcn.id
+}
+
+data "oci_core_route_tables" "migration_directus_db" {
+  compartment_id = var.oci_compartment_ocid
+  display_name   = "${var.db_instance_name}-rt"
+  state          = "AVAILABLE"
+  vcn_id         = local.migration_directus_db_vcn.id
+}
+
+data "oci_core_security_lists" "migration_directus_db" {
+  compartment_id = var.oci_compartment_ocid
+  display_name   = "${var.db_instance_name}-sl"
+  state          = "AVAILABLE"
+  vcn_id         = local.migration_directus_db_vcn.id
+}
+
+data "oci_core_subnets" "migration_directus_db" {
+  compartment_id = var.oci_compartment_ocid
+  display_name   = "${var.db_instance_name}-subnet"
+  state          = "AVAILABLE"
+  vcn_id         = local.migration_directus_db_vcn.id
+}
+
+data "oci_core_instances" "migration_directus_db" {
+  compartment_id = var.oci_compartment_ocid
+  display_name   = var.db_instance_name
+  state          = "RUNNING"
+}
+
+data "oci_core_public_ips" "migration_directus_db" {
+  compartment_id = var.oci_compartment_ocid
+  lifetime       = "RESERVED"
+  scope          = "REGION"
+
+  filter {
+    name   = "display_name"
+    values = ["${var.db_instance_name}-reserved-public-ip"]
+  }
+}
 
 import {
   to = oci_core_vcn.directus_db
-  id = "REPLACE_WITH_VCN_OCID"
+  id = local.migration_directus_db_vcn.id
 }
 
 import {
   to = oci_core_internet_gateway.directus_db
-  id = "REPLACE_WITH_INTERNET_GATEWAY_OCID"
+  id = one(data.oci_core_internet_gateways.migration_directus_db.gateways).id
 }
 
 import {
   to = oci_core_route_table.directus_db
-  id = "REPLACE_WITH_ROUTE_TABLE_OCID"
+  id = one(data.oci_core_route_tables.migration_directus_db.route_tables).id
 }
 
 import {
   to = oci_core_security_list.directus_db
-  id = "REPLACE_WITH_SECURITY_LIST_OCID"
+  id = one(data.oci_core_security_lists.migration_directus_db.security_lists).id
 }
 
 import {
   to = oci_core_subnet.directus_db
-  id = "REPLACE_WITH_SUBNET_OCID"
+  id = one(data.oci_core_subnets.migration_directus_db.subnets).id
 }
 
 import {
   to = oci_core_instance.directus_db
-  id = "REPLACE_WITH_INSTANCE_OCID"
+  id = one(data.oci_core_instances.migration_directus_db.instances).id
 }
 
 import {
   to = oci_core_public_ip.directus_db_reserved[0]
-  id = "REPLACE_WITH_RESERVED_PUBLIC_IP_OCID"
+  id = one(data.oci_core_public_ips.migration_directus_db.public_ips).id
 }
