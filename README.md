@@ -40,6 +40,12 @@ resource-address refactor.
   apply, and release workflow after migration.
 - `scripts/configure-repository.sh` - configures the required GitHub project
   variable and dispatches the initial workflow without console configuration.
+- `scripts/migrate-target-state.sh` - locks `k8s-cms`, validates an import-only
+  plan, applies it, and proves that the target state is clean.
+- `scripts/migrate-source-state.sh` - dispatches the guarded `k8s-cms`
+  forget-only run after its OCI source files are removed.
+- `scripts/finalize-state-migration.sh` - proves exclusive ownership and a
+  final zero-change target plan before enabling routine applies.
 
 ## Scripted bootstrap
 
@@ -68,6 +74,29 @@ initial workflow. That workflow:
 The initial workflow persists the detected agent-pool ID as the repository
 variable `TFE_AGENT_POOL_ID`, then disables itself after it succeeds. Routine
 deployments re-enforce that agent pool before every run.
+
+After reviewing the initial speculative plan, run:
+
+```bash
+./scripts/migrate-target-state.sh
+```
+
+The migration workflow refuses to apply if HCP reports any Terraform adds,
+changes, or destroys. It leaves `k8s-cms` locked after a successful import so
+the source forget-only phase can run without dual ownership races.
+
+After the committed `k8s-cms` source removal is reviewed, the remaining
+scripted commands are:
+
+```bash
+./scripts/migrate-source-state.sh
+./scripts/finalize-state-migration.sh
+```
+
+Migration-only workflows, the Vault bootstrap directory, import templates,
+and source removal workflow are deleted after final verification. The normal
+Terraform deployment workflow and Vault-backed external-resource configuration
+remain.
 
 ## Safety
 

@@ -1,0 +1,212 @@
+name: One-time OCI target state import
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type MIGRATE_OCI_STATE_NO_DESTROY
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: external-infrastructure-state-migration
+  cancel-in-progress: false
+
+jobs:
+  import:
+    if: inputs.confirmation == 'MIGRATE_OCI_STATE_NO_DESTROY'
+    runs-on: ubuntu-latest
+    env:
+      TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
+      TF_WORKSPACE: ${{ github.event.repository.name }}
+      SOURCE_WORKSPACE: k8s-cms
+      SOURCE_LOCK_REASON: suncoast-external-infrastructure OCI state migration
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Verify workspaces and lock source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${TF_API_TOKEN:-}" ]] || {
+            echo "TFE_TOKEN is unavailable to this repository" >&2
+            exit 1
+          }
+
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+
+          source_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${SOURCE_WORKSPACE}")"
+          target_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+          source_id="$(jq -r '.data.id' <<<"${source_json}")"
+          target_id="$(jq -r '.data.id' <<<"${target_json}")"
+
+          [[ "$(jq -r '.data.attributes["auto-apply"]' <<<"${target_json}")" == "false" ]] || {
+            echo "Target workspace must have auto-apply disabled" >&2
+            exit 1
+          }
+          [[ "$(jq -r '.data.attributes["execution-mode"]' <<<"${target_json}")" == "agent" ]] || {
+            echo "Target workspace must use the self-hosted agent pool" >&2
+            exit 1
+          }
+
+          source_runs="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/workspaces/${source_id}/runs?page%5Bsize%5D=100")"
+          active_source_runs="$(jq '[.data[]? | select(.attributes.status | IN("pending","fetching","fetching_completed","pre_plan_running","pre_plan_completed","queuing","plan_queued","planning","planned","cost_estimating","cost_estimated","policy_checking","policy_override","policy_soft_failed","post_plan_running","post_plan_completed","confirmed","apply_queued","applying","post_apply_running"))] | length' <<<"${source_runs}")"
+          [[ "${active_source_runs}" == "0" ]] || {
+            echo "Source workspace has an active or queued Terraform run" >&2
+            exit 1
+          }
+
+          target_resources="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/workspaces/${target_id}/resources?page%5Bsize%5D=100")"
+          existing_oci_count="$(jq '[.data[]? | select(.attributes.provider | test("oracle/oci|hashicorp/tls"))] | length' <<<"${target_resources}")"
+          [[ "${existing_oci_count}" == "0" ]] || {
+            echo "Target workspace already tracks OCI or TLS resources; refusing duplicate import" >&2
+            exit 1
+          }
+
+          source_locked="$(jq -r '.data.attributes.locked' <<<"${source_json}")"
+          source_locked_reason="$(jq -r '.data.attributes["locked-reason"] // empty' <<<"${source_json}")"
+          if [[ "${source_locked}" == "true" ]]; then
+            [[ "${source_locked_reason}" == "${SOURCE_LOCK_REASON}" ]] || {
+              echo "Source workspace is locked for an unrelated reason: ${source_locked_reason}" >&2
+              exit 1
+            }
+            echo "Source workspace already has the migration lock"
+          else
+            lock_payload="$(jq -n --arg reason "${SOURCE_LOCK_REASON}" '{reason:$reason}')"
+            curl --fail --silent --show-error \
+              --request POST \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${lock_payload}" \
+              "${api}/workspaces/${source_id}/actions/lock" >/dev/null
+            echo "Locked source workspace ${SOURCE_WORKSPACE}"
+          fi
+
+      - name: Stage import configuration
+        shell: bash
+        run: cp migration/imports.tf.example terraform/imports.tf
+
+      - name: Upload import configuration
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: import_upload
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          directory: terraform
+
+      - name: Create applicable import run
+        uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: import_run
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          configuration_version: ${{ steps.import_upload.outputs.configuration_version_id }}
+          plan_only: false
+          message: One-time no-destroy OCI state import
+
+      - name: Read import plan summary
+        uses: hashicorp/tfc-workflows-github/actions/plan-output@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: import_plan
+        with:
+          plan: ${{ steps.import_run.outputs.plan_id }}
+
+      - name: Reject any infrastructure mutation
+        env:
+          PLAN_ADD: ${{ steps.import_plan.outputs.add }}
+          PLAN_CHANGE: ${{ steps.import_plan.outputs.change }}
+          PLAN_DESTROY: ${{ steps.import_plan.outputs.destroy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${PLAN_ADD}" == "0" && "${PLAN_CHANGE}" == "0" && "${PLAN_DESTROY}" == "0" ]] || {
+            echo "Import rejected: plan contains add=${PLAN_ADD}, change=${PLAN_CHANGE}, destroy=${PLAN_DESTROY}" >&2
+            exit 1
+          }
+          echo "Import plan contains no create, update, replacement, or destroy actions"
+
+      - name: Apply reviewed import run
+        uses: hashicorp/tfc-workflows-github/actions/apply-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        with:
+          run: ${{ steps.import_run.outputs.run_id }}
+          comment: Apply guarded one-time OCI state import from GitHub run ${{ github.run_id }}
+
+      - name: Remove transient import configuration
+        shell: bash
+        run: rm terraform/imports.tf
+
+      - name: Upload normal configuration
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: clean_upload
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          directory: terraform
+
+      - name: Create zero-change verification run
+        uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: clean_run
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          configuration_version: ${{ steps.clean_upload.outputs.configuration_version_id }}
+          plan_only: true
+          message: Verify target state after OCI import
+
+      - name: Read verification plan summary
+        uses: hashicorp/tfc-workflows-github/actions/plan-output@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: clean_plan
+        with:
+          plan: ${{ steps.clean_run.outputs.plan_id }}
+
+      - name: Verify clean target and imported addresses
+        env:
+          PLAN_ADD: ${{ steps.clean_plan.outputs.add }}
+          PLAN_CHANGE: ${{ steps.clean_plan.outputs.change }}
+          PLAN_DESTROY: ${{ steps.clean_plan.outputs.destroy }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${PLAN_ADD}" == "0" && "${PLAN_CHANGE}" == "0" && "${PLAN_DESTROY}" == "0" ]] || {
+            echo "Post-import target is not clean: add=${PLAN_ADD}, change=${PLAN_CHANGE}, destroy=${PLAN_DESTROY}" >&2
+            exit 1
+          }
+
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+          target_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+          target_id="$(jq -r '.data.id' <<<"${target_json}")"
+          resources_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/workspaces/${target_id}/resources?page%5Bsize%5D=100")"
+
+          expected_addresses=(
+            'oci_core_instance.directus_db'
+            'oci_core_internet_gateway.directus_db'
+            'oci_core_public_ip.directus_db_reserved[0]'
+            'oci_core_route_table.directus_db'
+            'oci_core_security_list.directus_db'
+            'oci_core_subnet.directus_db'
+            'oci_core_vcn.directus_db'
+          )
+          for address in "${expected_addresses[@]}"; do
+            jq -e --arg address "${address}" '.data[]? | select(.attributes.address == $address)' <<<"${resources_json}" >/dev/null || {
+              echo "Imported target address is missing: ${address}" >&2
+              exit 1
+            }
+          done
+          if jq -e '.data[]? | select(.attributes.address == "tls_private_key.db_tunnel[0]")' <<<"${resources_json}" >/dev/null; then
+            echo "Target must use the existing Vault tunnel key, not a TLS-generated key" >&2
+            exit 1
+          fi
+
+          echo "Target state import is complete and clean"
+          echo "Source workspace remains locked until its forget-only run completes"
+
+      - name: Report migration runs
+        shell: bash
+        run: |
+          echo "Import run: ${{ steps.import_run.outputs.run_link }}"
+          echo "Zero-change target verification: ${{ steps.clean_run.outputs.run_link }}"

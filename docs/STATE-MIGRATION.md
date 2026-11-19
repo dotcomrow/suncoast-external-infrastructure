@@ -105,20 +105,21 @@ rollback baseline.
 
 ## Phase 3: import into the target workspace
 
-1. Lock the `k8s-cms` workspace.
-2. Confirm it has no current or queued runs.
-3. Copy `migration/imports.tf.example` into the target `terraform/` directory as
-   `imports.tf`.
+1. Run `./scripts/migrate-target-state.sh`.
+2. The dispatched workflow verifies that `k8s-cms` has no active or queued
+   runs, then locks it with a migration-specific reason.
+3. The workflow stages `migration/imports.tf.example` as the target
+   `terraform/imports.tf` only inside its runner.
 4. The migration data sources look up the existing OCI objects by their
    historical display names. Every lookup uses `one(...)` and therefore fails
    unless the match is unique. Compare the discovered IDs with the OCI values
    recorded in Phase 2.
-5. Upload the target configuration and create a speculative plan.
-6. The plan must contain imports only. It must contain zero create, update,
-   replace, and delete operations against OCI.
-7. Apply the reviewed import plan.
-8. Remove `imports.tf` and create another speculative target plan.
-9. The resulting plan must report no infrastructure changes.
+5. The workflow creates an applicable plan but refuses to apply unless the HCP
+   plan summary reports zero additions, changes, and destroys.
+6. After applying the imports, it removes the transient import file, uploads
+   the normal configuration, and requires a zero-change speculative plan.
+7. It verifies all seven OCI addresses are present in the target state and that
+   the obsolete TLS-generated key address is absent.
 
 The source remains locked during this temporary dual-state interval.
 
@@ -138,6 +139,31 @@ Only after Phase 3 succeeds:
 7. Confirm all expected addresses remain in the target state.
 8. Run a fresh speculative plan in both workspaces. Both must be clean.
 9. Unlock the source workspace.
+
+Steps 3-9 are performed by `./scripts/migrate-source-state.sh`, which dispatches
+the manual-only `k8s-cms` migration workflow. That workflow refuses to run
+until the OCI source files are absent and all eight `removed` blocks explicitly
+set `destroy = false`. It unlocks the source only for its guarded run, rejects
+any add/change/destroy plan summary, applies the state removals, and verifies
+that no OCI/TLS address remains.
+
+Then run `./scripts/finalize-state-migration.sh`. The finalizer requires zero
+OCI/TLS records in the source, exactly seven managed OCI records in the target,
+and a zero-change target plan before it sets
+`STATE_MIGRATION_COMPLETE=true`.
+
+## Phase 5: remove migration-only scaffolding
+
+After final verification and live PostgreSQL/NFS smoke tests:
+
+1. Delete the target `initial-deploy.yml`, `migrate-target-state.yml`,
+   `finalize-state-migration.yml`, `audit-state-migration.yml`,
+   `terraform-vault-bootstrap/`, and `migration/` artifacts.
+2. Delete `k8s-cms/.github/workflows/migrate-oci-state-out.yml`.
+3. Retain `terraform/removed-oci-postgresql.tf` in `k8s-cms` for at least one
+   normal release as the auditable no-destroy record, then delete it.
+4. Retain the normal target `terraform-deploy.yml`, Terraform configuration,
+   Vault reads, and operating documentation for all future external resources.
 
 The `removed` blocks may remain for at least one release as an auditable record
 of the transfer and can be removed later.
