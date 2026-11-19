@@ -1,0 +1,86 @@
+name: External infrastructure Terraform
+
+on:
+  pull_request:
+    paths:
+      - terraform/**
+      - .github/workflows/terraform.yml
+  push:
+    branches:
+      - prod
+    paths:
+      - terraform/**
+      - .github/workflows/terraform.yml
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Create an applicable HCP Terraform run
+        required: true
+        default: false
+        type: boolean
+      confirmation:
+        description: Type APPLY_EXTERNAL_INFRASTRUCTURE when apply is enabled
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-infrastructure-terraform
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    env:
+      TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
+      TF_WORKSPACE: ${{ github.event.repository.name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Validate run mode
+        shell: bash
+        env:
+          APPLY_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
+          APPLY_CONFIRMATION: ${{ inputs.confirmation }}
+          MIGRATION_COMPLETE: ${{ vars.STATE_MIGRATION_COMPLETE }}
+        run: |
+          set -euo pipefail
+          test -n "${TF_API_TOKEN:-}" || {
+            echo "TFE_TOKEN is unavailable to this repository" >&2
+            exit 1
+          }
+
+          if [[ "${APPLY_REQUESTED}" == "true" ]]; then
+            [[ "${APPLY_CONFIRMATION}" == "APPLY_EXTERNAL_INFRASTRUCTURE" ]] || {
+              echo "Applicable run rejected: confirmation phrase did not match" >&2
+              exit 1
+            }
+            [[ "${MIGRATION_COMPLETE}" == "true" ]] || {
+              echo "Applicable run rejected: STATE_MIGRATION_COMPLETE is not true" >&2
+              exit 1
+            }
+          fi
+
+      - name: Upload configuration
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: upload
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          directory: terraform
+
+      - name: Create HCP Terraform run
+        uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: run
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          configuration_version: ${{ steps.upload.outputs.configuration_version_id }}
+          plan_only: ${{ !(github.event_name == 'workflow_dispatch' && inputs.apply && inputs.confirmation == 'APPLY_EXTERNAL_INFRASTRUCTURE' && vars.STATE_MIGRATION_COMPLETE == 'true') }}
+
+      - name: Report run
+        shell: bash
+        run: |
+          echo "HCP Terraform run: ${{ steps.run.outputs.run_link }}"

@@ -1,0 +1,37 @@
+# Copy this file to terraform/imports.tf only for the reviewed migration run.
+# Replace every placeholder with the exact OCID from the k8s-cms state.
+
+import {
+  to = oci_core_vcn.directus_db
+  id = "REPLACE_WITH_VCN_OCID"
+}
+
+import {
+  to = oci_core_internet_gateway.directus_db
+  id = "REPLACE_WITH_INTERNET_GATEWAY_OCID"
+}
+
+import {
+  to = oci_core_route_table.directus_db
+  id = "REPLACE_WITH_ROUTE_TABLE_OCID"
+}
+
+import {
+  to = oci_core_security_list.directus_db
+  id = "REPLACE_WITH_SECURITY_LIST_OCID"
+}
+
+import {
+  to = oci_core_subnet.directus_db
+  id = "REPLACE_WITH_SUBNET_OCID"
+}
+
+import {
+  to = oci_core_instance.directus_db
+  id = "REPLACE_WITH_INSTANCE_OCID"
+}
+
+import {
+  to = oci_core_public_ip.directus_db_reserved[0]
+  id = "REPLACE_WITH_RESERVED_PUBLIC_IP_OCID"
+}
