@@ -23,7 +23,8 @@ output "db_port" {
 }
 
 output "db_name" {
-  value = local.db_name_effective
+  value     = local.db_name_effective
+  sensitive = true
 }
 
 output "directus_uploads_nfs_enabled" {
