@@ -223,14 +223,23 @@ jobs:
             }
           done
 
-          varset_relationship_payload="$(jq -n --arg id "${target_id}" '{data:[{type:"workspaces",id:$id}]}')"
-          curl --fail --silent --show-error \
-            --request POST \
-            --header "${auth_header}" \
-            --header "${content_header}" \
-            --data "${varset_relationship_payload}" \
-            "${api}/varsets/${source_varset_id}/relationships/workspaces" >/dev/null
-          echo "Attached ${SOURCE_VARIABLE_SET} to ${TF_WORKSPACE}"
+          target_varsets_json="$(api_get "${api}/workspaces/${target_id}/varsets")"
+          target_has_source_varset="$(jq --arg id "${source_varset_id}" '[.data[]? | select(.id == $id)] | length' <<<"${target_varsets_json}")"
+          detach_source_varset=false
+
+          if [[ "${target_has_source_varset}" == "1" ]]; then
+            echo "${SOURCE_VARIABLE_SET} is already available to ${TF_WORKSPACE} through inherited scope"
+          else
+            varset_relationship_payload="$(jq -n --arg id "${target_id}" '{data:[{type:"workspaces",id:$id}]}')"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${varset_relationship_payload}" \
+              "${api}/varsets/${source_varset_id}/relationships/workspaces" >/dev/null
+            detach_source_varset=true
+            echo "Temporarily attached ${SOURCE_VARIABLE_SET} to ${TF_WORKSPACE}"
+          fi
 
           source_state_json="$(api_get "${api}/workspaces/${source_id}/current-state-version")"
           source_state_id="$(jq -r '.data.id' <<<"${source_state_json}")"
@@ -239,6 +248,7 @@ jobs:
             echo "workspace_id=${target_id}"
             echo "source_state_id=${source_state_id}"
             echo "agent_pool_id=${source_agent_pool_id}"
+            echo "detach_source_varset=${detach_source_varset}"
           } >>"${GITHUB_OUTPUT}"
           rm -f /tmp/target-state.json /tmp/target-workspace.json
 
@@ -271,6 +281,7 @@ jobs:
           comment: Store existing OCI credentials in Vault without changing OCI
 
       - name: Detach broad migration variable set
+        if: steps.bootstrap.outputs.detach_source_varset == 'true'
         shell: bash
         run: |
           set -euo pipefail
