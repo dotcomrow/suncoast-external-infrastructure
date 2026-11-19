@@ -38,8 +38,8 @@ resource-address refactor.
   bootstrap, and speculative import plan.
 - `.github/workflows/terraform-deploy.yml` - standard ongoing Terraform plan,
   apply, and release workflow after migration.
-- `scripts/configure-repository.sh` - configures the required GitHub project
-  variable and dispatches the initial workflow without console configuration.
+- `scripts/configure-repository.sh` - dispatches the initial workflow without
+  console configuration.
 - `scripts/migrate-target-state.sh` - locks `k8s-cms`, validates an import-only
   plan, applies it, and proves that the target state is clean.
 - `scripts/migrate-source-state.sh` - dispatches the guarded `k8s-cms`
@@ -53,13 +53,15 @@ No HCP Terraform workspace settings or Terraform input secrets are configured
 by hand. From an authenticated `gh` CLI session, run:
 
 ```bash
-./scripts/configure-repository.sh "HCP PROJECT NAME"
+./scripts/configure-repository.sh
 ```
 
-The script sets the repository `TFE_PROJECT` variable and dispatches the
-initial workflow. That workflow:
+The HCP Terraform project name, workspace name, and GitHub repository name are
+all `suncoast-external-infrastructure`. The workflow derives both HCP names
+directly from `github.event.repository.name`; no project-name variable is
+required. The script dispatches that workflow, which:
 
-1. resolves the existing HCP project exactly by name;
+1. resolves or creates the HCP project exactly by repository name;
 2. copies the Terraform version and self-hosted agent pool from `k8s-cms`;
 3. creates an empty target workspace with auto-apply disabled;
 4. creates the standard `project_name` and `org_name` workspace variables;

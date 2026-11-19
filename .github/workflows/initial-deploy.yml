@@ -25,7 +25,7 @@ jobs:
       TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
       TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
       TF_WORKSPACE: ${{ github.event.repository.name }}
-      TF_PROJECT_NAME: ${{ vars.TFE_PROJECT }}
+      TF_PROJECT_NAME: ${{ github.event.repository.name }}
       SOURCE_WORKSPACE: k8s-cms
       SOURCE_VARIABLE_SET: K8S Cluster Variables
     steps:
@@ -40,8 +40,8 @@ jobs:
             echo "TFE_TOKEN is unavailable to this repository" >&2
             exit 1
           }
-          [[ -n "${TF_PROJECT_NAME:-}" ]] || {
-            echo "TFE_PROJECT is not configured as a GitHub Actions variable" >&2
+          [[ "${TF_PROJECT_NAME}" == "${TF_WORKSPACE}" ]] || {
+            echo "HCP project and workspace names must match the GitHub repository name" >&2
             exit 1
           }
 
@@ -64,11 +64,24 @@ jobs:
 
           projects_json="$(api_get "${api}/organizations/${TF_CLOUD_ORGANIZATION}/projects?page%5Bsize%5D=100")"
           project_count="$(jq --arg name "${TF_PROJECT_NAME}" '[.data[]? | select(.attributes.name == $name)] | length' <<<"${projects_json}")"
-          [[ "${project_count}" == "1" ]] || {
-            echo "Expected exactly one HCP Terraform project named ${TF_PROJECT_NAME}; found ${project_count}" >&2
+          [[ "${project_count}" == "0" || "${project_count}" == "1" ]] || {
+            echo "Expected at most one HCP Terraform project named ${TF_PROJECT_NAME}; found ${project_count}" >&2
             exit 1
           }
-          project_id="$(jq -r --arg name "${TF_PROJECT_NAME}" '.data[] | select(.attributes.name == $name) | .id' <<<"${projects_json}")"
+          if [[ "${project_count}" == "0" ]]; then
+            project_payload="$(jq -n --arg name "${TF_PROJECT_NAME}" '{data:{type:"projects",attributes:{name:$name}}}')"
+            project_json="$(curl --fail --silent --show-error \
+              --request POST \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${project_payload}" \
+              "${api}/organizations/${TF_CLOUD_ORGANIZATION}/projects")"
+            project_id="$(jq -r '.data.id' <<<"${project_json}")"
+            echo "Created HCP Terraform project ${TF_PROJECT_NAME}"
+          else
+            project_id="$(jq -r --arg name "${TF_PROJECT_NAME}" '.data[] | select(.attributes.name == $name) | .id' <<<"${projects_json}")"
+            echo "Using existing HCP Terraform project ${TF_PROJECT_NAME}"
+          fi
 
           source_json="$(api_get "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${SOURCE_WORKSPACE}")"
           source_id="$(jq -r '.data.id' <<<"${source_json}")"

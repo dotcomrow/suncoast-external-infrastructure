@@ -76,10 +76,12 @@ secret, and the broad Kubernetes variable set is detached automatically.
 ## Phase 1: create an inert target workspace
 
 1. Review the committed workflows and Terraform configuration.
-2. Run `./scripts/configure-repository.sh "HCP PROJECT NAME"` from this
-   repository. This is the only bootstrap command; it replaces console setup.
-3. The script sets `TFE_PROJECT`, enables the initial workflow if necessary,
-   and dispatches it with its required confirmation.
+2. Run `./scripts/configure-repository.sh` from this repository. This is the
+   only bootstrap command; it replaces console setup. The script derives the
+   repository automatically.
+3. The initial workflow uses `github.event.repository.name` for both the HCP
+   project and workspace, creates either when absent, and requires no manually
+   configured project-name variable.
 4. The workflow copies the Terraform version and self-hosted agent pool from
    `k8s-cms`, creates the target workspace with auto-apply disabled, configures
    standard workspace variables, performs the isolated Vault bootstrap,
