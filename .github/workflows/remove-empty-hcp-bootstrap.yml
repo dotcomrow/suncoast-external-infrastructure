@@ -1,0 +1,110 @@
+name: Remove empty HCP bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type REMOVE_EMPTY_EXTERNAL_INFRASTRUCTURE_WORKSPACE
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  remove:
+    if: inputs.confirmation == 'REMOVE_EMPTY_EXTERNAL_INFRASTRUCTURE_WORKSPACE'
+    runs-on: ubuntu-latest
+    env:
+      TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
+      TF_WORKSPACE: suncoast-external-infrastructure
+      TF_PROJECT_NAME: Suncoast External Infrastructure
+    steps:
+      - name: Verify emptiness and remove bootstrap objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${TF_API_TOKEN:-}" || {
+            echo "TFE_TOKEN is unavailable to this repository" >&2
+            exit 1
+          }
+
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+
+          workspace_json="$(curl --fail --silent --show-error \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+          workspace_id="$(jq -r '.data.id' <<<"${workspace_json}")"
+          project_id="$(jq -r '.data.relationships.project.data.id' <<<"${workspace_json}")"
+
+          [[ "$(jq -r '.data.attributes.name' <<<"${workspace_json}")" == "${TF_WORKSPACE}" ]]
+          [[ "$(jq -r '.data.attributes["resource-count"]' <<<"${workspace_json}")" == "0" ]]
+
+          project_json="$(curl --fail --silent --show-error \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/projects/${project_id}")"
+          [[ "$(jq -r '.data.attributes.name' <<<"${project_json}")" == "${TF_PROJECT_NAME}" ]]
+
+          state_status="$(curl --silent --show-error \
+            --output /tmp/current-state.json \
+            --write-out '%{http_code}' \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/workspaces/${workspace_id}/current-state-version")"
+          [[ "${state_status}" == "404" ]] || {
+            echo "Refusing removal: workspace has a current state version" >&2
+            exit 1
+          }
+
+          runs_json="$(curl --fail --silent --show-error \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/workspaces/${workspace_id}/runs?page%5Bsize%5D=100")"
+          [[ "$(jq '.data | length' <<<"${runs_json}")" == "0" ]] || {
+            echo "Refusing removal: workspace has Terraform runs" >&2
+            exit 1
+          }
+
+          vars_json="$(curl --fail --silent --show-error \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/workspaces/${workspace_id}/vars")"
+          [[ "$(jq '.data | length' <<<"${vars_json}")" == "0" ]] || {
+            echo "Refusing removal: workspace has workspace-local variables" >&2
+            exit 1
+          }
+
+          curl --fail --silent --show-error \
+            --request DELETE \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/workspaces/${workspace_id}"
+          echo "Removed empty HCP Terraform workspace ${TF_WORKSPACE}"
+
+          for _ in $(seq 1 15); do
+            project_workspaces_json="$(curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/projects/${project_id}/workspaces?page%5Bsize%5D=100")"
+            [[ "$(jq '.data | length' <<<"${project_workspaces_json}")" == "0" ]] && break
+            sleep 2
+          done
+
+          [[ "$(jq '.data | length' <<<"${project_workspaces_json}")" == "0" ]] || {
+            echo "Refusing project removal: project still contains workspaces" >&2
+            exit 1
+          }
+
+          curl --fail --silent --show-error \
+            --request DELETE \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/projects/${project_id}"
+          echo "Removed empty HCP Terraform project ${TF_PROJECT_NAME}"
+
+          rm -f /tmp/current-state.json
