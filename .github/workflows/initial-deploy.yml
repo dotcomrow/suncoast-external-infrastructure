@@ -280,11 +280,16 @@ jobs:
           } >>"${GITHUB_OUTPUT}"
           rm -f /tmp/target-state.json /tmp/target-workspace.json
 
-      - name: Persist self-hosted Terraform agent pool setting
+      - name: Verify standard self-hosted Terraform agent pool variable
         env:
-          GH_TOKEN: ${{ github.token }}
+          CONFIGURED_AGENT_POOL_ID: ${{ vars.TFE_AGENT_POOL_ID }}
         shell: bash
-        run: gh variable set TFE_AGENT_POOL_ID --body '${{ steps.bootstrap.outputs.agent_pool_id }}'
+        run: |
+          set -euo pipefail
+          [[ "${CONFIGURED_AGENT_POOL_ID:-}" == '${{ steps.bootstrap.outputs.agent_pool_id }}' ]] || {
+            echo "Inherited TFE_AGENT_POOL_ID does not match the source workspace agent pool" >&2
+            exit 1
+          }
 
       - name: Upload Vault credential bootstrap
         uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661

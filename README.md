@@ -65,17 +65,18 @@ required. The script dispatches that workflow, which:
 2. copies the Terraform version and self-hosted agent pool from `k8s-cms`;
 3. creates an empty target workspace with auto-apply disabled;
 4. creates the standard `project_name` and `org_name` workspace variables;
-5. temporarily attaches `K8S Cluster Variables` to obtain the existing OCI
-   values;
+5. temporarily places the empty workspace in the source project so it can use
+   the project-scoped `K8S Cluster Variables` values;
 6. runs only the Vault bootstrap configuration on the self-hosted agent,
    writing the OCI credentials to `secret/external-infrastructure/oci`;
-7. detaches the broad variable set;
+7. removes the temporary credential access and restores the workspace to its
+   repository-named project;
 8. reads ongoing OCI and Directus values directly from Vault; and
 9. creates a speculative import plan without applying any OCI changes.
 
-The initial workflow persists the detected agent-pool ID as the repository
-variable `TFE_AGENT_POOL_ID`, then disables itself after it succeeds. Routine
-deployments re-enforce that agent pool before every run.
+The initial workflow verifies that the standard inherited organization variable
+`TFE_AGENT_POOL_ID` matches the source workspace, then disables itself after it
+succeeds. Routine deployments re-enforce that agent pool before every run.
 
 After reviewing the initial speculative plan, run:
 
