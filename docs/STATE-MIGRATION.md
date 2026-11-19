@@ -41,39 +41,53 @@ The instance boot volume is part of `oci_core_instance.directus_db`; it is not a
 separate resource in this configuration. Data sources are recalculated and do
 not move between states.
 
-## Sensitive-value prerequisite
+## Vault and sensitive values
 
-The TLS provider does not provide a safe import path for the generated SSH
-private key. Before importing OCI resources, copy these current values into the
-new workspace as sensitive Terraform variables:
+The target workspace runs exclusively on the existing self-hosted HCP
+Terraform agent pool. The agent supplies Vault connectivity and authentication;
+no Vault token or application secret is stored in GitHub.
 
-- `db_tunnel_private_key_b64`
-- `db_tunnel_public_key`
-- `directus_db_password`
+Existing Directus values are read from these Vault KV-v2 paths:
 
-The first two values must be the exact current tunnel key pair. Supplying them
-causes `tls_private_key.db_tunnel` to have `count = 0` in the target workspace.
-The existing key is therefore preserved rather than regenerated.
+```text
+secret/directus_db_database
+secret/directus_db_user
+secret/directus_db_password
+secret/directus_db_ssh_private_key_b64
+```
 
-Also reproduce the source workspace's OCI provider variables and all effective
-non-default infrastructure variables. Attach the same HCP Terraform variable
-sets where appropriate. Sensitive workspace-local variables must be entered
-again because HCP Terraform does not return their values through its API.
+Each existing Directus path uses the `value` field. Terraform derives the
+matching OpenSSH public key from the Vault private key, so the TLS private-key
+resource is not recreated in the target workspace.
+
+The OCI credentials historically exist in `K8S Cluster Variables`, not in
+Vault. The initial workflow temporarily attaches that variable set and applies
+the isolated `terraform-vault-bootstrap/` configuration. This writes the
+values to:
+
+```text
+secret/external-infrastructure/oci
+```
+
+The normal configuration then reads OCI credentials from Vault. A `removed`
+block forgets the one-time Vault bootstrap resource without deleting the
+secret, and the broad Kubernetes variable set is detached automatically.
 
 ## Phase 1: create an inert target workspace
 
-1. Configure the repository's `TFE_PROJECT` GitHub Actions variable using the
-   same project-selection convention as `k8s-cms`.
-2. Adapt the established `k8s-cms` `initial-deploy.yml` workflow for this
-   repository. During the state migration, it must create the workspace with
-   auto-apply disabled and must not upload or apply the normal configuration.
-   The unmodified workflow is unsafe here because it creates an auto-applying
-   workspace and immediately starts an applicable run.
-3. Confirm the new workspace is in the intended HCP Terraform project, is
-   empty, and has auto-apply disabled.
-4. Set its Terraform version to 1.7 or newer.
-5. Populate the variables described above.
-6. Do not run or apply the Terraform configuration yet.
+1. Review the committed workflows and Terraform configuration.
+2. Run `./scripts/configure-repository.sh "HCP PROJECT NAME"` from this
+   repository. This is the only bootstrap command; it replaces console setup.
+3. The script sets `TFE_PROJECT`, enables the initial workflow if necessary,
+   and dispatches it with its required confirmation.
+4. The workflow copies the Terraform version and self-hosted agent pool from
+   `k8s-cms`, creates the target workspace with auto-apply disabled, configures
+   standard workspace variables, performs the isolated Vault bootstrap,
+   detaches the migration variable set, and creates a speculative import plan.
+5. The workflow disables itself only after all bootstrap steps succeed.
+6. Review the reported import plan. Do not apply it unless it contains imports
+   and the expected Vault bootstrap state removal only, with no OCI creates,
+   updates, replacements, or deletions.
 
 ## Phase 2: capture and verify source identity
 

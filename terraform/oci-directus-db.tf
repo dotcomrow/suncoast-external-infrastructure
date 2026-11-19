@@ -1,17 +1,17 @@
 provider "oci" {
-  tenancy_ocid = var.oci_tenancy_ocid
-  user_ocid    = var.oci_user_ocid
-  fingerprint  = var.oci_fingerprint
-  private_key  = replace(var.oci_private_key, "\\n", "\n")
-  region       = var.oci_region
+  tenancy_ocid = local.oci_tenancy_ocid
+  user_ocid    = local.oci_user_ocid
+  fingerprint  = local.oci_fingerprint
+  private_key  = replace(local.oci_private_key, "\\n", "\n")
+  region       = local.oci_region
 }
 
 data "oci_identity_availability_domains" "ads" {
-  compartment_id = var.oci_tenancy_ocid
+  compartment_id = local.oci_tenancy_ocid
 }
 
 data "oci_core_images" "ubuntu" {
-  compartment_id           = var.oci_tenancy_ocid
+  compartment_id           = local.oci_tenancy_ocid
   operating_system         = "Canonical Ubuntu"
   operating_system_version = "24.04"
   shape                    = var.db_shape
@@ -20,7 +20,7 @@ data "oci_core_images" "ubuntu" {
 }
 
 resource "oci_core_vcn" "directus_db" {
-  compartment_id = var.oci_compartment_ocid
+  compartment_id = local.oci_compartment_ocid
   cidr_blocks    = [var.vcn_cidr]
   display_name   = "${var.db_instance_name}-vcn"
   dns_label      = var.vcn_dns_label
@@ -32,7 +32,7 @@ resource "oci_core_vcn" "directus_db" {
 }
 
 resource "oci_core_internet_gateway" "directus_db" {
-  compartment_id = var.oci_compartment_ocid
+  compartment_id = local.oci_compartment_ocid
   vcn_id         = oci_core_vcn.directus_db.id
   display_name   = "${var.db_instance_name}-igw"
   enabled        = true
@@ -44,7 +44,7 @@ resource "oci_core_internet_gateway" "directus_db" {
 }
 
 resource "oci_core_route_table" "directus_db" {
-  compartment_id = var.oci_compartment_ocid
+  compartment_id = local.oci_compartment_ocid
   vcn_id         = oci_core_vcn.directus_db.id
   display_name   = "${var.db_instance_name}-rt"
 
@@ -94,7 +94,7 @@ locals {
 }
 
 resource "oci_core_security_list" "directus_db" {
-  compartment_id = var.oci_compartment_ocid
+  compartment_id = local.oci_compartment_ocid
   vcn_id         = oci_core_vcn.directus_db.id
   display_name   = "${var.db_instance_name}-sl"
 
@@ -158,7 +158,7 @@ resource "oci_core_security_list" "directus_db" {
 }
 
 resource "oci_core_subnet" "directus_db" {
-  compartment_id             = var.oci_compartment_ocid
+  compartment_id             = local.oci_compartment_ocid
   vcn_id                     = oci_core_vcn.directus_db.id
   cidr_block                 = var.subnet_cidr
   display_name               = "${var.db_instance_name}-subnet"
@@ -175,8 +175,8 @@ resource "oci_core_subnet" "directus_db" {
 
 locals {
   selected_image_id          = coalesce(var.db_image_ocid, data.oci_core_images.ubuntu.images[0].id)
-  has_db_tunnel_private_key  = var.db_tunnel_private_key_b64 != null && trimspace(var.db_tunnel_private_key_b64) != ""
-  has_db_tunnel_public_key   = var.db_tunnel_public_key != null && trimspace(var.db_tunnel_public_key) != ""
+  has_db_tunnel_private_key  = local.db_tunnel_private_key_b64_vault != ""
+  has_db_tunnel_public_key   = local.db_tunnel_public_key_vault != ""
   use_provided_db_tunnel_key = var.enable_db_ssh_tunnel && local.has_db_tunnel_private_key && local.has_db_tunnel_public_key
 
   postgres_listen_addresses = var.enable_db_ssh_tunnel ? "127.0.0.1" : "*"
@@ -189,10 +189,10 @@ locals {
   )
 
   db_tunnel_public_key_openssh = var.enable_db_ssh_tunnel ? (
-    local.use_provided_db_tunnel_key ? trimspace(var.db_tunnel_public_key) : tls_private_key.db_tunnel[0].public_key_openssh
+    local.use_provided_db_tunnel_key ? local.db_tunnel_public_key_vault : tls_private_key.db_tunnel[0].public_key_openssh
   ) : ""
   db_tunnel_private_key_b64 = var.enable_db_ssh_tunnel ? (
-    local.use_provided_db_tunnel_key ? trimspace(var.db_tunnel_private_key_b64) : base64encode(tls_private_key.db_tunnel[0].private_key_openssh)
+    local.use_provided_db_tunnel_key ? local.db_tunnel_private_key_b64_vault : base64encode(tls_private_key.db_tunnel[0].private_key_openssh)
   ) : ""
   instance_ssh_authorized_keys = distinct(compact(concat(
     var.ssh_authorized_keys,
@@ -216,7 +216,7 @@ resource "tls_private_key" "db_tunnel" {
 }
 
 resource "oci_core_instance" "directus_db" {
-  compartment_id      = var.oci_compartment_ocid
+  compartment_id      = local.oci_compartment_ocid
   availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
   display_name        = var.db_instance_name
   shape               = var.db_shape
@@ -242,9 +242,9 @@ resource "oci_core_instance" "directus_db" {
 
   metadata = {
     user_data = base64encode(templatefile("${path.module}/templates/cloud-init-directus-db.tftpl", {
-      db_name                   = var.db_name
-      directus_db_user          = var.directus_db_user
-      directus_db_password      = var.directus_db_password
+      db_name                   = local.db_name_effective
+      directus_db_user          = local.directus_db_user_effective
+      directus_db_password      = local.directus_db_password_effective
       postgres_listen_addresses = local.postgres_listen_addresses
       # Keep each injected pg_hba rule indented inside cloud-init's script block.
       pg_hba_rules                          = join("\n      ", local.postgres_hba_rules)
@@ -290,7 +290,7 @@ resource "oci_core_instance" "directus_db" {
 
 data "oci_core_vnic_attachments" "directus_db" {
   count          = var.assign_public_ip ? 1 : 0
-  compartment_id = var.oci_compartment_ocid
+  compartment_id = local.oci_compartment_ocid
   instance_id    = oci_core_instance.directus_db.id
 
   depends_on = [oci_core_instance.directus_db]
@@ -316,7 +316,7 @@ locals {
 
 resource "oci_core_public_ip" "directus_db_reserved" {
   count          = var.assign_public_ip ? 1 : 0
-  compartment_id = var.oci_compartment_ocid
+  compartment_id = local.oci_compartment_ocid
   display_name   = "${var.db_instance_name}-reserved-public-ip"
   lifetime       = "RESERVED"
   private_ip_id  = local.db_primary_private_ip_id

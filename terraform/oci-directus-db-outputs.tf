@@ -23,7 +23,7 @@ output "db_port" {
 }
 
 output "db_name" {
-  value = var.db_name
+  value = local.db_name_effective
 }
 
 output "directus_uploads_nfs_enabled" {
@@ -51,7 +51,7 @@ output "directus_uploads_nfs_mountd_port" {
 }
 
 output "directus_db_user" {
-  value     = var.directus_db_user
+  value     = local.directus_db_user_effective
   sensitive = true
 }
 
@@ -89,9 +89,9 @@ output "vault_secret_directus_db" {
   value = {
     host                   = local.db_host
     port                   = "5432"
-    database               = var.db_name
-    username               = var.directus_db_user
-    password               = var.directus_db_password
+    database               = local.db_name_effective
+    username               = local.directus_db_user_effective
+    password               = local.directus_db_password_effective
     ssh_tunnel_enabled     = tostring(var.enable_db_ssh_tunnel)
     ssh_tunnel_host        = local.db_host
     ssh_tunnel_port        = "22"
@@ -107,9 +107,9 @@ output "vault_secret_directus_db_root" {
   value = {
     directus_db_host                   = local.db_host
     directus_db_port                   = "5432"
-    directus_db_database               = var.db_name
-    directus_db_username               = var.directus_db_user
-    directus_db_password               = var.directus_db_password
+    directus_db_database               = local.db_name_effective
+    directus_db_username               = local.directus_db_user_effective
+    directus_db_password               = local.directus_db_password_effective
     directus_db_ssh_tunnel_enabled     = tostring(var.enable_db_ssh_tunnel)
     directus_db_ssh_tunnel_host        = local.db_host
     directus_db_ssh_tunnel_port        = "22"

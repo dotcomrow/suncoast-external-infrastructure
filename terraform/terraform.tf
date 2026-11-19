@@ -10,5 +10,9 @@ terraform {
       source  = "hashicorp/tls"
       version = "~> 4.0"
     }
+    vault = {
+      source  = "hashicorp/vault"
+      version = "~> 5.0"
+    }
   }
 }

@@ -1,0 +1,338 @@
+name: Initial create workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type CREATE_MIGRATION_WORKSPACE
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: external-infrastructure-initial-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: inputs.confirmation == 'CREATE_MIGRATION_WORKSPACE'
+    name: Build and prepare migration workspace
+    runs-on: ubuntu-latest
+    env:
+      TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
+      TF_WORKSPACE: ${{ github.event.repository.name }}
+      TF_PROJECT_NAME: ${{ vars.TFE_PROJECT }}
+      SOURCE_WORKSPACE: k8s-cms
+      SOURCE_VARIABLE_SET: K8S Cluster Variables
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Validate bootstrap inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${TF_API_TOKEN:-}" ]] || {
+            echo "TFE_TOKEN is unavailable to this repository" >&2
+            exit 1
+          }
+          [[ -n "${TF_PROJECT_NAME:-}" ]] || {
+            echo "TFE_PROJECT is not configured as a GitHub Actions variable" >&2
+            exit 1
+          }
+
+      - name: Create inert workspace and configure migration variables
+        id: bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+
+          api_get() {
+            curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "$1"
+          }
+
+          projects_json="$(api_get "${api}/organizations/${TF_CLOUD_ORGANIZATION}/projects?page%5Bsize%5D=100")"
+          project_count="$(jq --arg name "${TF_PROJECT_NAME}" '[.data[]? | select(.attributes.name == $name)] | length' <<<"${projects_json}")"
+          [[ "${project_count}" == "1" ]] || {
+            echo "Expected exactly one HCP Terraform project named ${TF_PROJECT_NAME}; found ${project_count}" >&2
+            exit 1
+          }
+          project_id="$(jq -r --arg name "${TF_PROJECT_NAME}" '.data[] | select(.attributes.name == $name) | .id' <<<"${projects_json}")"
+
+          source_json="$(api_get "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${SOURCE_WORKSPACE}")"
+          source_id="$(jq -r '.data.id' <<<"${source_json}")"
+          source_terraform_version="$(jq -r '.data.attributes["terraform-version"]' <<<"${source_json}")"
+          source_execution_mode="$(jq -r '.data.attributes["execution-mode"] // empty' <<<"${source_json}")"
+          source_agent_pool_id="$(jq -r '.data.relationships["agent-pool"].data.id // empty' <<<"${source_json}")"
+          [[ "${source_execution_mode}" == "agent" && "${source_agent_pool_id}" == apool-* ]] || {
+            echo "Source workspace is not configured for a valid self-hosted HCP Terraform agent pool" >&2
+            exit 1
+          }
+
+          workspace_status="$(curl --silent --show-error \
+            --output /tmp/target-workspace.json \
+            --write-out '%{http_code}' \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+
+          if [[ "${workspace_status}" == "404" ]]; then
+            workspace_payload="$(jq -n \
+              --arg name "${TF_WORKSPACE}" \
+              --arg project_id "${project_id}" \
+              --arg terraform_version "${source_terraform_version}" \
+              --arg agent_pool_id "${source_agent_pool_id}" \
+              '{data:{type:"workspaces",attributes:{name:$name,"auto-apply":false,"terraform-version":$terraform_version,"execution-mode":"agent","agent-pool-id":$agent_pool_id,"setting-overwrites":{"execution-mode":true,"agent-pool":true}},relationships:{project:{data:{type:"projects",id:$project_id}}}}}')"
+            curl --fail --silent --show-error \
+              --request POST \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${workspace_payload}" \
+              "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces" \
+              >/tmp/target-workspace.json
+            echo "Created inert HCP Terraform workspace ${TF_WORKSPACE}"
+          elif [[ "${workspace_status}" == "200" ]]; then
+            [[ "$(jq -r '.data.relationships.project.data.id' /tmp/target-workspace.json)" == "${project_id}" ]] || {
+              echo "Existing target workspace belongs to a different HCP Terraform project" >&2
+              exit 1
+            }
+            [[ "$(jq -r '.data.attributes["resource-count"]' /tmp/target-workspace.json)" == "0" ]] || {
+              echo "Existing target workspace is not empty" >&2
+              exit 1
+            }
+            target_existing_id="$(jq -r '.data.id' /tmp/target-workspace.json)"
+            state_status="$(curl --silent --show-error \
+              --output /tmp/target-state.json \
+              --write-out '%{http_code}' \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/workspaces/${target_existing_id}/current-state-version")"
+            [[ "${state_status}" == "404" ]] || {
+              echo "Existing target workspace already has state; refusing bootstrap" >&2
+              exit 1
+            }
+            workspace_payload="$(jq -n \
+              --arg version "${source_terraform_version}" \
+              --arg agent_pool_id "${source_agent_pool_id}" \
+              '{data:{type:"workspaces",attributes:{"auto-apply":false,"terraform-version":$version,"execution-mode":"agent","agent-pool-id":$agent_pool_id,"setting-overwrites":{"execution-mode":true,"agent-pool":true}}}}')"
+            curl --fail --silent --show-error \
+              --request PATCH \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${workspace_payload}" \
+              "${api}/workspaces/${target_existing_id}" \
+              >/tmp/target-workspace.json
+            echo "Reused verified-empty HCP Terraform workspace ${TF_WORKSPACE}"
+          else
+            cat /tmp/target-workspace.json >&2
+            exit 1
+          fi
+
+          target_id="$(jq -r '.data.id' /tmp/target-workspace.json)"
+          [[ "$(jq -r '.data.attributes["execution-mode"] // empty' /tmp/target-workspace.json)" == "agent" ]]
+          [[ "$(jq -r '.data.relationships["agent-pool"].data.id // empty' /tmp/target-workspace.json)" == "${source_agent_pool_id}" ]]
+
+          upsert_workspace_variable() {
+            local key="$1"
+            local value="$2"
+            local description="$3"
+            local sensitive="$4"
+            local variables_json variable_id payload
+
+            variables_json="$(api_get "${api}/workspaces/${target_id}/vars")"
+            variable_id="$(jq -r --arg key "${key}" '.data[]? | select(.attributes.key == $key and .attributes.category == "terraform") | .id' <<<"${variables_json}" | head -n1)"
+
+            if [[ -n "${variable_id}" ]]; then
+              payload="$(jq -n \
+                --arg id "${variable_id}" \
+                --arg key "${key}" \
+                --arg value "${value}" \
+                --arg description "${description}" \
+                --argjson sensitive "${sensitive}" \
+                '{data:{id:$id,type:"vars",attributes:{key:$key,value:$value,description:$description,category:"terraform",hcl:false,sensitive:$sensitive}}}')"
+              curl --fail --silent --show-error \
+                --request PATCH \
+                --header "${auth_header}" \
+                --header "${content_header}" \
+                --data "${payload}" \
+                "${api}/vars/${variable_id}" >/dev/null
+            else
+              payload="$(jq -n \
+                --arg workspace_id "${target_id}" \
+                --arg key "${key}" \
+                --arg value "${value}" \
+                --arg description "${description}" \
+                --argjson sensitive "${sensitive}" \
+                '{data:{type:"vars",attributes:{key:$key,value:$value,description:$description,category:"terraform",hcl:false,sensitive:$sensitive},relationships:{workspace:{data:{id:$workspace_id,type:"workspaces"}}}}}')"
+              curl --fail --silent --show-error \
+                --request POST \
+                --header "${auth_header}" \
+                --header "${content_header}" \
+                --data "${payload}" \
+                "${api}/vars" >/dev/null
+            fi
+          }
+
+          upsert_workspace_variable "project_name" "${TF_WORKSPACE}" "project name" false
+          upsert_workspace_variable "org_name" "${TF_CLOUD_ORGANIZATION}" "organization name" false
+
+          source_varsets_json="$(api_get "${api}/workspaces/${source_id}/varsets")"
+          source_varset_count="$(jq --arg name "${SOURCE_VARIABLE_SET}" '[.data[]? | select(.attributes.name == $name)] | length' <<<"${source_varsets_json}")"
+          [[ "${source_varset_count}" == "1" ]] || {
+            echo "Expected exactly one source variable set named ${SOURCE_VARIABLE_SET}; found ${source_varset_count}" >&2
+            exit 1
+          }
+          source_varset_id="$(jq -r --arg name "${SOURCE_VARIABLE_SET}" '.data[] | select(.attributes.name == $name) | .id' <<<"${source_varsets_json}")"
+          source_varset_variables="$(api_get "${api}/varsets/${source_varset_id}/relationships/vars?page%5Bsize%5D=100")"
+
+          required_keys=(
+            oci_compartment_ocid
+            oci_fingerprint
+            oci_private_key
+            oci_region
+            oci_tenancy_ocid
+            oci_user_ocid
+          )
+          for required_key in "${required_keys[@]}"; do
+            jq -e --arg key "${required_key}" '.data[]? | select(.attributes.key == $key and .attributes.category == "terraform")' <<<"${source_varset_variables}" >/dev/null || {
+              echo "Required variable ${required_key} is missing from ${SOURCE_VARIABLE_SET}" >&2
+              exit 1
+            }
+          done
+
+          varset_relationship_payload="$(jq -n --arg id "${target_id}" '{data:[{type:"workspaces",id:$id}]}')"
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            --data "${varset_relationship_payload}" \
+            "${api}/varsets/${source_varset_id}/relationships/workspaces" >/dev/null
+          echo "Attached ${SOURCE_VARIABLE_SET} to ${TF_WORKSPACE}"
+
+          source_state_json="$(api_get "${api}/workspaces/${source_id}/current-state-version")"
+          source_state_id="$(jq -r '.data.id' <<<"${source_state_json}")"
+
+          {
+            echo "workspace_id=${target_id}"
+            echo "source_state_id=${source_state_id}"
+            echo "agent_pool_id=${source_agent_pool_id}"
+          } >>"${GITHUB_OUTPUT}"
+          rm -f /tmp/target-state.json /tmp/target-workspace.json
+
+      - name: Persist self-hosted Terraform agent pool setting
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh variable set TFE_AGENT_POOL_ID --body '${{ steps.bootstrap.outputs.agent_pool_id }}'
+
+      - name: Upload Vault credential bootstrap
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: vault_upload
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          directory: terraform-vault-bootstrap
+
+      - name: Create Vault credential bootstrap run
+        uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: vault_run
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          configuration_version: ${{ steps.vault_upload.outputs.configuration_version_id }}
+          plan_only: false
+          message: Persist OCI credentials in Vault before state migration
+
+      - name: Apply Vault credential bootstrap
+        uses: hashicorp/tfc-workflows-github/actions/apply-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        with:
+          run: ${{ steps.vault_run.outputs.run_id }}
+          comment: Store existing OCI credentials in Vault without changing OCI
+
+      - name: Detach broad migration variable set
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+          target_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+          target_id="$(jq -r '.data.id' <<<"${target_json}")"
+          source_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${SOURCE_WORKSPACE}")"
+          source_id="$(jq -r '.data.id' <<<"${source_json}")"
+          varsets_json="$(curl --fail --silent --show-error --header "${auth_header}" --header "${content_header}" "${api}/workspaces/${source_id}/varsets")"
+          varset_id="$(jq -er --arg name "${SOURCE_VARIABLE_SET}" '.data[] | select(.attributes.name == $name) | .id' <<<"${varsets_json}")"
+          payload="$(jq -n --arg id "${target_id}" '{data:[{type:"workspaces",id:$id}]}')"
+          curl --fail --silent --show-error \
+            --request DELETE \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            --data "${payload}" \
+            "${api}/varsets/${varset_id}/relationships/workspaces" >/dev/null
+          echo "Detached ${SOURCE_VARIABLE_SET}; subsequent runs use Vault through the self-hosted agent"
+
+      - name: Stage import-only configuration
+        shell: bash
+        run: cp migration/imports.tf.example terraform/imports.tf
+
+      - name: Upload import configuration
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: upload
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          directory: terraform
+
+      - name: Create speculative import plan
+        uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: plan
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          configuration_version: ${{ steps.upload.outputs.configuration_version_id }}
+          plan_only: true
+          message: Initial no-destroy OCI state migration plan
+
+      - name: Create release
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          VERSION_SOURCE_STATE: ${{ steps.bootstrap.outputs.source_state_id }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const tag = `migration-bootstrap-${context.runId}`;
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              target_commitish: 'prod',
+              name: tag,
+              generate_release_notes: true,
+              body: `Source state version: ${process.env.VERSION_SOURCE_STATE}\nTarget plan: ${{ steps.plan.outputs.run_link }}`
+            });
+
+      - name: Disable initial workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/initial-deploy.yml/disable"
+
+      - name: Report migration plan
+        shell: bash
+        run: |
+          echo "HCP Terraform workspace: ${TF_WORKSPACE}"
+          echo "Source state version: ${{ steps.bootstrap.outputs.source_state_id }}"
+          echo "Speculative import plan: ${{ steps.plan.outputs.run_link }}"
+          echo "No Terraform apply was requested by this workflow"
