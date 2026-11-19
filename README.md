@@ -34,10 +34,10 @@ resource-address refactor.
 
 ## Safety
 
-The existing OCI resources use `prevent_destroy = true`. Routine GitHub pushes
-create speculative HCP Terraform runs only. An applicable run requires a manual
-dispatch, an exact confirmation phrase, and `STATE_MIGRATION_COMPLETE=true` in
-the repository Actions variables.
+The existing OCI resources use `prevent_destroy = true`. The repository's HCP
+Terraform workspace creation and deployment workflows are intentionally not
+active yet. They must be adapted from the established `k8s-cms` GitHub Actions
+process after the required GitHub repository variables are configured.
 
 Do not apply this repository against an empty workspace. First complete
 `docs/STATE-MIGRATION.md` and prove that the target workspace plan contains no

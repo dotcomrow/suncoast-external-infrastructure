@@ -62,11 +62,18 @@ again because HCP Terraform does not return their values through its API.
 
 ## Phase 1: create an inert target workspace
 
-1. Run the `Bootstrap HCP Terraform workspace` workflow.
-2. Confirm the workspace exists with auto-apply disabled.
-3. Set its Terraform version to 1.7 or newer.
-4. Populate the variables described above.
-5. Do not run or apply the Terraform configuration yet.
+1. Configure the repository's `TFE_PROJECT` GitHub Actions variable using the
+   same project-selection convention as `k8s-cms`.
+2. Adapt the established `k8s-cms` `initial-deploy.yml` workflow for this
+   repository. During the state migration, it must create the workspace with
+   auto-apply disabled and must not upload or apply the normal configuration.
+   The unmodified workflow is unsafe here because it creates an auto-applying
+   workspace and immediately starts an applicable run.
+3. Confirm the new workspace is in the intended HCP Terraform project, is
+   empty, and has auto-apply disabled.
+4. Set its Terraform version to 1.7 or newer.
+5. Populate the variables described above.
+6. Do not run or apply the Terraform configuration yet.
 
 ## Phase 2: capture and verify source identity
 
