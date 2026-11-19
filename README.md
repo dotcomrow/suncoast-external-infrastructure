@@ -46,6 +46,8 @@ resource-address refactor.
   forget-only run after its OCI source files are removed.
 - `scripts/finalize-state-migration.sh` - proves exclusive ownership and a
   final zero-change target plan before enabling routine applies.
+- `scripts/configure-workspace-project.sh` - assigns the existing HCP Terraform
+  workspace to the project selected by the repository variable `TFE_PROJECT`.
 
 ## Scripted bootstrap
 
@@ -56,27 +58,36 @@ by hand. From an authenticated `gh` CLI session, run:
 ./scripts/configure-repository.sh
 ```
 
-The HCP Terraform project name, workspace name, and GitHub repository name are
-all `suncoast-external-infrastructure`. The workflow derives both HCP names
-directly from `github.event.repository.name`; no project-name variable is
-required. The script dispatches that workflow, which:
+The HCP Terraform workspace name is derived from the GitHub repository name.
+The HCP project is selected by the standard repository variable `TFE_PROJECT`.
+For this repository it is `Suncoast Systems K8s Cluster`. The script dispatches
+the initial workflow, which:
 
-1. resolves or creates the HCP project exactly by repository name;
+1. resolves exactly one existing HCP project named by `TFE_PROJECT`;
 2. copies the Terraform version and self-hosted agent pool from `k8s-cms`;
-3. creates an empty target workspace with auto-apply disabled;
+3. creates or moves the repository-named workspace into that project with
+   auto-apply disabled;
 4. creates the standard `project_name` and `org_name` workspace variables;
 5. temporarily places the empty workspace in the source project so it can use
    the project-scoped `K8S Cluster Variables` values;
 6. runs only the Vault bootstrap configuration on the self-hosted agent,
    writing the OCI credentials to `secret/external-infrastructure/oci`;
-7. removes the temporary credential access and restores the workspace to its
-   repository-named project;
-8. reads ongoing OCI and Directus values directly from Vault; and
+7. removes any temporary credential access and restores the workspace to the
+   project selected by `TFE_PROJECT`;
+8. reads ongoing OCI and Directus values directly from Vault through the
+   standard project variables; and
 9. creates a speculative import plan without applying any OCI changes.
 
 The initial workflow verifies that the standard inherited organization variable
 `TFE_AGENT_POOL_ID` matches the source workspace, then disables itself after it
-succeeds. Routine deployments re-enforce that agent pool before every run.
+succeeds. Routine deployments re-enforce both `TFE_PROJECT` and that agent pool
+before every run.
+
+To reconcile only the HCP project assignment without running a Terraform plan:
+
+```bash
+./scripts/configure-workspace-project.sh
+```
 
 After reviewing the initial speculative plan, run:
 
