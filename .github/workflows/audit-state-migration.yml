@@ -51,6 +51,8 @@ jobs:
           target_json="$(get_workspace "${TARGET_WORKSPACE}")"
           source_id="$(jq -r '.data.id' <<<"${source_json}")"
           target_id="$(jq -r '.data.id' <<<"${target_json}")"
+          source_project_id="$(jq -r '.data.relationships.project.data.id // empty' <<<"${source_json}")"
+          target_project_id="$(jq -r '.data.relationships.project.data.id // empty' <<<"${target_json}")"
 
           echo "Source workspace: ${SOURCE_WORKSPACE}"
           jq -r '.data.attributes | "  terraform-version=\(."terraform-version") auto-apply=\(."auto-apply") locked=\(.locked) resource-count=\(."resource-count")"' <<<"${source_json}"
@@ -88,6 +90,42 @@ jobs:
               | jq -r '.data[] | select(.attributes.provider | test("oracle/oci|hashicorp/tls")) | "  \(.attributes.address) provider=\(.attributes.provider)"' \
               | sort
           done
+
+          echo "Organization variable sets and scopes (values suppressed):"
+          varsets_json="$(curl --fail --silent --show-error \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/varsets?page%5Bsize%5D=100")"
+
+          while IFS=$'\t' read -r varset_id varset_name varset_global; do
+            [[ -n "${varset_id}" ]] || continue
+
+            workspaces_json="$(curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/varsets/${varset_id}/relationships/workspaces")"
+            projects_json="$(curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/varsets/${varset_id}/relationships/projects")"
+
+            applies_to_source="false"
+            applies_to_target="false"
+            if [[ "${varset_global}" == "true" ]] || jq -e --arg id "${source_id}" '.data[]? | select(.id == $id)' <<<"${workspaces_json}" >/dev/null || { [[ -n "${source_project_id}" ]] && jq -e --arg id "${source_project_id}" '.data[]? | select(.id == $id)' <<<"${projects_json}" >/dev/null; }; then
+              applies_to_source="true"
+            fi
+            if [[ "${varset_global}" == "true" ]] || jq -e --arg id "${target_id}" '.data[]? | select(.id == $id)' <<<"${workspaces_json}" >/dev/null || { [[ -n "${target_project_id}" ]] && jq -e --arg id "${target_project_id}" '.data[]? | select(.id == $id)' <<<"${projects_json}" >/dev/null; }; then
+              applies_to_target="true"
+            fi
+
+            echo "  ${varset_name} id=${varset_id} global=${varset_global} source=${applies_to_source} target=${applies_to_target}"
+            curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/varsets/${varset_id}/relationships/vars?page%5Bsize%5D=100" \
+              | jq -r '.data[]? | "    \(.attributes.key) category=\(.attributes.category) sensitive=\(.attributes.sensitive) hcl=\(.attributes.hcl)"' \
+              | sort
+          done < <(jq -r '.data[]? | [.id, .attributes.name, (.attributes.global | tostring)] | @tsv' <<<"${varsets_json}")
 
           source_state_status="$(curl --silent --show-error \
             --output /tmp/source-state-version.json \
