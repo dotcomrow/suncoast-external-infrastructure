@@ -86,7 +86,7 @@ jobs:
                 --header "${auth_header}" \
                 --header "${content_header}" \
                 "${api}/varsets/${varset_id}/relationships/vars?page%5Bsize%5D=100" \
-                | jq -r '.data[]? | "    \(.attributes.key) category=\(.attributes.category) sensitive=\(.attributes.sensitive) hcl=\(.attributes.hcl)"' \
+                | jq -r '.data[]? | "    \(.attributes.key) category=\(.attributes.category) sensitive=\(.attributes.sensitive) hcl=\(.attributes.hcl) value-available=\((.attributes.value // "") != "")"' \
                 | sort
             done < <(jq -r '.data[]? | [.id, .attributes.name] | @tsv' <<<"${workspace_varsets_json}")
 
@@ -113,7 +113,7 @@ jobs:
               --header "${auth_header}" \
               --header "${content_header}" \
               "${api}/state-versions/${source_state_id}/outputs?page%5Bsize%5D=100" \
-              | jq -r '.data[] | select(.attributes.name | test("^(db_|directus_uploads_nfs|directus_db_user|vault_secret_directus_db)")) | "  \(.attributes.name) sensitive=\(.attributes.sensitive)"' \
+              | jq -r '.data[] | select(.attributes.name | test("^(db_|directus_uploads_nfs|directus_db_user|vault_secret_directus_db)")) | "  \(.attributes.name) sensitive=\(.attributes.sensitive) value-available=\((.attributes.value // "") != "")"' \
               | sort
           else
             echo "Source current state: unavailable (HTTP ${source_state_status})"
