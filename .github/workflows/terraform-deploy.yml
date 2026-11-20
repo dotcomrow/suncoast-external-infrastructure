@@ -116,6 +116,12 @@ jobs:
           plan_only: ${{ !(github.event_name == 'workflow_dispatch' && inputs.apply) }}
           message: GitHub ${{ github.event_name }} run ${{ github.run_id }}
 
+      - name: Read Terraform plan summary
+        uses: hashicorp/tfc-workflows-github/actions/plan-output@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: plan
+        with:
+          plan: ${{ steps.run.outputs.plan_id }}
+
       - name: Apply Terraform run
         if: github.event_name == 'workflow_dispatch' && inputs.apply
         uses: hashicorp/tfc-workflows-github/actions/apply-run@8e08d1ba957673f5fbf971a22b3219639dc45661
@@ -144,3 +150,4 @@ jobs:
         shell: bash
         run: |
           echo "HCP Terraform run: ${{ steps.run.outputs.run_link }}"
+          echo "Plan summary: add=${{ steps.plan.outputs.add }}, change=${{ steps.plan.outputs.change }}, destroy=${{ steps.plan.outputs.destroy }}"
