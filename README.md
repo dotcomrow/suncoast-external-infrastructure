@@ -30,10 +30,6 @@ independent state operation and provides no operational benefit.
   workspace, performs the first Terraform deployment, and disables itself.
 - `.github/workflows/terraform-deploy.yml` - standard Terraform plan, guarded
   apply, and release workflow.
-- `.github/workflows/configure-workspace-project.yml` - assigns the workspace
-  to the project selected by `TFE_PROJECT`.
-- `scripts/configure-workspace-project.sh` - dispatches project reconciliation
-  from an authenticated GitHub CLI session.
 
 ## Workspace standard
 
@@ -51,12 +47,6 @@ deployments run only while that workflow is recorded as `disabled_manually`.
 The initial workflow refuses to run against a workspace that already contains
 managed resources. Re-enable it only when deliberately creating this external
 infrastructure from an empty HCP Terraform workspace.
-
-To reconcile the project assignment without running Terraform:
-
-```bash
-./scripts/configure-workspace-project.sh
-```
 
 ## Deployments
 
