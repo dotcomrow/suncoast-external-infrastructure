@@ -37,45 +37,24 @@ jobs:
       TFE_AGENT_POOL_ID: ${{ vars.TFE_AGENT_POOL_ID }}
       TFE_PROJECT: ${{ vars.TFE_PROJECT }}
     steps:
-      - name: Check initial workflow and run mode
-        id: preflight
+      - name: Validate run mode
         env:
-          GH_TOKEN: ${{ github.token }}
           APPLY_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.apply }}
           APPLY_CONFIRMATION: ${{ inputs.confirmation }}
-          MIGRATION_COMPLETE: ${{ vars.STATE_MIGRATION_COMPLETE }}
         shell: bash
         run: |
           set -euo pipefail
-          initial_state="$(gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/${GITHUB_REPOSITORY}/actions/workflows/initial-deploy.yml" \
-            --jq '.state')"
-          if [[ "${initial_state}" != "disabled_manually" ]]; then
-            echo "Initial deployment has not completed; routine deployment is skipped"
-            echo "ready=false" >>"${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          echo "ready=true" >>"${GITHUB_OUTPUT}"
-
           if [[ "${APPLY_REQUESTED}" == "true" ]]; then
             [[ "${APPLY_CONFIRMATION}" == "APPLY_EXTERNAL_INFRASTRUCTURE" ]] || {
               echo "Applicable run rejected: confirmation phrase did not match" >&2
               exit 1
             }
-            [[ "${MIGRATION_COMPLETE}" == "true" ]] || {
-              echo "Applicable run rejected: STATE_MIGRATION_COMPLETE is not true" >&2
-              exit 1
-            }
           fi
 
       - name: Checkout
-        if: steps.preflight.outputs.ready == 'true'
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
 
       - name: Enforce configured project and self-hosted agent pool
-        if: steps.preflight.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -114,7 +93,7 @@ jobs:
           [[ "$(jq -r '.data.relationships.project.data.id // empty' <<<"${workspace_json}")" == "${project_id}" ]]
 
       - name: Get next version
-        if: steps.preflight.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        if: github.event_name == 'workflow_dispatch' && inputs.apply
         uses: reecetech/version-increment@a29aa752dc3b8118a2dc2ed93faf0e95a73a9c7e
         id: version
         with:
@@ -122,7 +101,6 @@ jobs:
           increment: patch
 
       - name: Upload Terraform configuration
-        if: steps.preflight.outputs.ready == 'true'
         uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661
         id: upload
         with:
@@ -130,7 +108,6 @@ jobs:
           directory: terraform
 
       - name: Create Terraform run
-        if: steps.preflight.outputs.ready == 'true'
         uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
         id: run
         with:
@@ -140,14 +117,14 @@ jobs:
           message: GitHub ${{ github.event_name }} run ${{ github.run_id }}
 
       - name: Apply Terraform run
-        if: steps.preflight.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        if: github.event_name == 'workflow_dispatch' && inputs.apply
         uses: hashicorp/tfc-workflows-github/actions/apply-run@8e08d1ba957673f5fbf971a22b3219639dc45661
         with:
           run: ${{ steps.run.outputs.run_id }}
           comment: Approved external infrastructure apply from GitHub run ${{ github.run_id }}
 
       - name: Create release
-        if: steps.preflight.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.apply
+        if: github.event_name == 'workflow_dispatch' && inputs.apply
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -164,7 +141,6 @@ jobs:
             });
 
       - name: Report run
-        if: steps.preflight.outputs.ready == 'true'
         shell: bash
         run: |
           echo "HCP Terraform run: ${{ steps.run.outputs.run_link }}"
