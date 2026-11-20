@@ -5,3 +5,8 @@ import {
   to = oci_core_volume.postgresql_data
   id = "ocid1.volume.oc1.iad.abuwcljrn276akos4ogb3as4dglzmm2bx532notyb57dmutkr4miq4fdyytq"
 }
+
+import {
+  to = oci_core_volume_attachment.postgresql_data
+  id = "ocid1.volumeattachment.oc1.iad.anuwcljrsflnnfacr3pfd3pzc2cljghdcobvfkr6xccnmgusayxvv5nenhaa"
+}
