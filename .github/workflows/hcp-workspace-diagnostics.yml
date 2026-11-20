@@ -1,0 +1,92 @@
+name: HCP workspace diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    name: Inspect workspace metadata
+    runs-on: ubuntu-latest
+    env:
+      TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
+    steps:
+      - name: Compare HCP workspace API responses
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+
+          inspect_workspace() {
+            local workspace_name="$1"
+            local response workspace_id
+
+            echo "=== ${workspace_name} ==="
+            response="$(curl --fail-with-body --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${workspace_name}")"
+            workspace_id="$(jq -r '.data.id' <<<"${response}")"
+
+            jq '{
+              id: .data.id,
+              type: .data.type,
+              attributes: (.data.attributes | {
+                name,
+                "resource-count",
+                "execution-mode",
+                "auto-apply",
+                "terraform-version",
+                "working-directory",
+                "file-triggers-enabled",
+                "global-remote-state",
+                locked,
+                operations,
+                "queue-all-runs",
+                "speculative-enabled",
+                "structured-run-output-enabled",
+                "assessments-enabled",
+                "created-at",
+                "updated-at",
+                source,
+                "source-name",
+                "latest-change-at"
+              }),
+              relationships: (.data.relationships | with_entries(
+                .value = if .value.data == null then null
+                         elif (.value.data | type) == "array" then
+                           [.value.data[] | {id, type}]
+                         else
+                           {id: .value.data.id, type: .value.data.type}
+                         end
+              ))
+            }' <<<"${response}"
+
+            for endpoint in \
+              "workspaces/${workspace_id}/runs?page%5Bsize%5D=1" \
+              "workspaces/${workspace_id}/vars" \
+              "workspaces/${workspace_id}/current-state-version" \
+              "workspaces/${workspace_id}/remote-state-consumers" \
+              "workspaces/${workspace_id}/variable-sets"; do
+              body_file="$(mktemp)"
+              status="$(curl --silent --show-error \
+                --output "${body_file}" \
+                --write-out '%{http_code}' \
+                --header "${auth_header}" \
+                --header "${content_header}" \
+                "${api}/${endpoint}")"
+              echo "${endpoint%%\?*}: HTTP ${status}"
+              if [[ ! "${status}" =~ ^2 ]]; then
+                jq -c '{errors}' "${body_file}" 2>/dev/null || sed -n '1,20p' "${body_file}"
+              fi
+              rm -f "${body_file}"
+            done
+          }
+
+          inspect_workspace "suncoast-external-infrastructure"
+          inspect_workspace "k8s-cms"
