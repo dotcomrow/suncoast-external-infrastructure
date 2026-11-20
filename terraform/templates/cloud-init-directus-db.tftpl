@@ -17,7 +17,7 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
 
-      DATA_DEVICE=$(cat <<'EOF_DATA_DEVICE'
+      PREFERRED_DATA_DEVICE=$(cat <<'EOF_DATA_DEVICE'
       ${postgresql_data_volume_device}
       EOF_DATA_DEVICE
       )
@@ -25,23 +25,59 @@ write_files:
       ${postgresql_data_mount_path}
       EOF_DATA_MOUNT
       )
-      DATA_DEVICE="$(printf '%s' "$DATA_DEVICE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      PREFERRED_DATA_DEVICE="$(printf '%s' "$PREFERRED_DATA_DEVICE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       DATA_MOUNT="$(printf '%s' "$DATA_MOUNT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       DATA_LABEL="postgresql-data"
 
-      if [ -z "$DATA_DEVICE" ] || [ -z "$DATA_MOUNT" ] || [ "$DATA_MOUNT" = "/" ]; then
-        echo "PostgreSQL data-volume device or mount path is invalid."
+      if [ -z "$DATA_MOUNT" ] || [ "$DATA_MOUNT" = "/" ]; then
+        echo "PostgreSQL data-volume mount path is invalid."
         exit 1
       fi
+
+      resolve_data_device() {
+        local labeled_device root_source root_disk candidate
+        local -a candidates=()
+
+        labeled_device="$(blkid -L "$DATA_LABEL" 2>/dev/null || true)"
+        if [ -n "$labeled_device" ] && [ -b "$labeled_device" ]; then
+          readlink -f "$labeled_device"
+          return 0
+        fi
+
+        if [ -n "$PREFERRED_DATA_DEVICE" ] && [ -b "$PREFERRED_DATA_DEVICE" ]; then
+          readlink -f "$PREFERRED_DATA_DEVICE"
+          return 0
+        fi
+
+        root_source="$(findmnt -n -o SOURCE /)"
+        root_disk="/dev/$(lsblk -no PKNAME "$root_source" 2>/dev/null || basename "$root_source")"
+        while IFS= read -r candidate; do
+          [ -b "$candidate" ] || continue
+          [ "$candidate" != "$root_disk" ] || continue
+          if [ "$(udevadm info --query=property --name="$candidate" 2>/dev/null | sed -n 's/^ID_VENDOR=//p')" = "ORACLE" ] && \
+             [ "$(udevadm info --query=property --name="$candidate" 2>/dev/null | sed -n 's/^ID_MODEL=//p')" = "BlockVolume" ]; then
+            candidates+=("$candidate")
+          fi
+        done < <(lsblk -dpno NAME,TYPE | awk '$2 == "disk" { print $1 }')
+
+        if [ "$${#candidates[@]}" -eq 1 ]; then
+          printf '%s\n' "$${candidates[0]}"
+          return 0
+        fi
+        return 1
+      }
 
       # Terraform creates the attachment after the instance exists, so a fresh
       # VM can begin cloud-init before the block device is visible.
       wait_seconds=0
-      while [ ! -b "$DATA_DEVICE" ]; do
+      DATA_DEVICE=""
+      while [ -z "$DATA_DEVICE" ]; do
+        DATA_DEVICE="$(resolve_data_device || true)"
         if [ "$wait_seconds" -ge 1800 ]; then
-          echo "Timed out waiting for PostgreSQL data volume: $DATA_DEVICE"
+          echo "Timed out waiting for a unique PostgreSQL Oracle BlockVolume."
           exit 1
         fi
+        [ -n "$DATA_DEVICE" ] && break
         sleep 5
         wait_seconds=$((wait_seconds + 5))
       done
@@ -128,7 +164,7 @@ write_files:
 
       [Service]
       Type=oneshot
-      ExecStart=/usr/sbin/resize2fs ${postgresql_data_volume_device}
+      ExecStart=/usr/sbin/resize2fs /dev/disk/by-label/postgresql-data
 
       [Install]
       WantedBy=multi-user.target

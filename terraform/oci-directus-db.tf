@@ -312,7 +312,6 @@ resource "oci_core_volume" "postgresql_data" {
 
 resource "oci_core_volume_attachment" "postgresql_data" {
   attachment_type                     = "paravirtualized"
-  device                              = var.postgresql_data_volume_device
   display_name                        = "${var.db_instance_name}-postgresql-data"
   instance_id                         = oci_core_instance.directus_db.id
   volume_id                           = oci_core_volume.postgresql_data.id

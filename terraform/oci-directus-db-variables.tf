@@ -69,7 +69,7 @@ variable "postgresql_data_volume_vpus_per_gb" {
 }
 
 variable "postgresql_data_volume_device" {
-  description = "Stable OCI device path assigned to the PostgreSQL data volume attachment."
+  description = "Preferred legacy OCI device path. Bootstrap falls back to discovering the unique non-boot Oracle BlockVolume when this path is absent."
   type        = string
   default     = "/dev/oracleoci/oraclevdb"
 

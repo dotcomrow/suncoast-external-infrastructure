@@ -65,7 +65,10 @@ by `ignore_changes = all`, allowing reviewed in-place updates.
 ## Fresh-build and recovery behavior
 
 Terraform creates the data volume in the same availability domain as the VM and
-attaches it at the consistent path `/dev/oracleoci/oraclevdb`. Cloud-init then:
+attaches it paravirtualized. Cloud-init prefers the legacy
+`/dev/oracleoci/oraclevdb` path when present; otherwise it discovers the unique
+non-boot Oracle BlockVolume and then persists the mount by filesystem UUID and
+label. Cloud-init then:
 
 1. Waits for Terraform's volume attachment to appear.
 2. Stops PostgreSQL before touching its data directory.
