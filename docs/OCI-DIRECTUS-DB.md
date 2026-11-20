@@ -81,28 +81,6 @@ attaches it at the consistent path `/dev/oracleoci/oraclevdb`. Cloud-init then:
 This fail-closed behavior prevents a rebuilt VM from silently creating a new
 database cluster on its boot volume when the durable volume is missing.
 
-## Existing-VM migration boundary
-
-Applying this Terraform configuration to the existing VM creates and attaches
-the empty volume and updates the flexible shape. It does not rerun cloud-init or
-move live PostgreSQL files.
-
-Moving the current cluster is a separate maintenance operation:
-
-1. Verify a PostgreSQL logical backup and OCI recovery point.
-2. Confirm the new attachment and device identity.
-3. Stop database clients and PostgreSQL.
-4. Format and mount the new volume using the end-state label and mount contract.
-5. Copy the cluster while preserving ownership, permissions, hard links, ACLs,
-   and extended attributes.
-6. Install the UUID-based mount and PostgreSQL systemd dependency.
-7. Start PostgreSQL and validate all databases and application connections.
-8. Retain the boot-volume copy until the new volume and backups are verified.
-
-The manual migration gets the running VM to the scripted end state. It is not
-part of normal rebuild automation and must not be run by Terraform against a
-live database.
-
 ## Connectivity
 
 - PostgreSQL listens on localhost when `enable_db_ssh_tunnel=true`.
@@ -127,7 +105,7 @@ shape update:
 - An in-place VM shape update.
 - No VM, boot-volume, network, reserved-IP, or tunnel-key replacement.
 
-After infrastructure and the manual data move are complete, run:
+After infrastructure deployment is complete, run:
 
 ```sh
 cd terraform
