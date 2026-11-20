@@ -356,7 +356,6 @@ resource "oci_core_public_ip" "directus_db_reserved" {
 
   lifecycle {
     prevent_destroy = true
-    ignore_changes  = all
   }
 }
 
