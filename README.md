@@ -20,7 +20,10 @@ independent state operation and provides no operational benefit.
 - Each application safely creates or adopts its own database, role, schema,
   and forward-only migrations.
 - OCI credentials and application values are read from Vault by the existing
-  self-hosted Terraform agent; they are not stored in GitHub.
+  self-hosted Terraform agent; they are not stored in GitHub. Terraform also
+  publishes the managed reserved IP to the existing database tunnel-host
+  secrets so consumers recover automatically after a fresh build or address
+  replacement.
 
 ## Repository layout
 

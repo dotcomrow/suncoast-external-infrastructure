@@ -88,6 +88,10 @@ database cluster on its boot volume when the durable volume is missing.
   port 5432 publicly.
 - The stable tunnel key and database credentials are read from Vault by the
   existing self-hosted Terraform agent.
+- Terraform writes the reserved public IP to
+  `secret/directus_db_tunnel_host` and
+  `secret/directus_db_ssh_tunnel_host`; applications therefore receive the
+  current endpoint without a manual Vault update.
 - NFS ingress is managed separately for the Directus uploads export.
 
 ## Deployment workflow
