@@ -14,8 +14,8 @@ fi
 DB_HOST="${DB_HOST:-$(terraform output -raw db_host 2>/dev/null || true)}"
 DB_PORT="${DB_PORT:-$(terraform output -raw db_port 2>/dev/null || true)}"
 DB_NAME="${DB_NAME:-$(terraform output -raw db_name 2>/dev/null || true)}"
-DB_USER="${DB_USER:-$(terraform output -raw directus_db_user 2>/dev/null || true)}"
-DB_PASSWORD="${DB_PASSWORD:-${TF_VAR_directus_db_password:-}}"
+DB_USER="${DB_USER:-$(terraform output -raw db_user 2>/dev/null || true)}"
+DB_PASSWORD="${DB_PASSWORD:-${TF_VAR_db_password:-}}"
 DB_TUNNEL_ENABLED="${DB_TUNNEL_ENABLED:-$(terraform output -raw db_tunnel_enabled 2>/dev/null || true)}"
 DB_TUNNEL_HOST="${DB_TUNNEL_HOST:-$(terraform output -raw db_tunnel_host 2>/dev/null || true)}"
 DB_TUNNEL_PORT="${DB_TUNNEL_PORT:-$(terraform output -raw db_tunnel_port 2>/dev/null || true)}"
@@ -29,7 +29,7 @@ if [ -z "${DB_HOST}" ] || [ -z "${DB_PORT}" ] || [ -z "${DB_NAME}" ] || [ -z "${
 fi
 
 if [ -z "${DB_PASSWORD}" ]; then
-  echo "Missing DB_PASSWORD (or TF_VAR_directus_db_password)."
+  echo "Missing DB_PASSWORD (or TF_VAR_db_password)."
   exit 1
 fi
 
@@ -108,23 +108,23 @@ if [ "${DB_TUNNEL_ENABLED}" = "true" ]; then
     -o ServerAliveCountMax=3 \
     -p "${DB_TUNNEL_PORT}" \
     -L "127.0.0.1:${DB_TUNNEL_LOCAL_PORT}:127.0.0.1:5432" \
-    "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" >/tmp/directus-db-smoke-tunnel.log 2>/tmp/directus-db-smoke.err &
+    "${DB_TUNNEL_USER}@${DB_TUNNEL_HOST}" >/tmp/postgresql-smoke-tunnel.log 2>/tmp/postgresql-smoke.err &
   SSH_PID=$!
   sleep 2
   if ! kill -0 "${SSH_PID}" >/dev/null 2>&1; then
     echo "SSH tunnel process exited early (auth/connectivity issue)."
-    if [ -f /tmp/directus-db-smoke.err ]; then
-      tail -n 20 /tmp/directus-db-smoke.err || true
+    if [ -f /tmp/postgresql-smoke.err ]; then
+      tail -n 20 /tmp/postgresql-smoke.err || true
     fi
     exit 1
   fi
   TEST_HOST="127.0.0.1"
   TEST_PORT="${DB_TUNNEL_LOCAL_PORT}"
-  RESULT="$(run_psql "${TEST_HOST}" "${TEST_PORT}" 2>/tmp/directus-db-smoke.err || true)"
+  RESULT="$(run_psql "${TEST_HOST}" "${TEST_PORT}" 2>/tmp/postgresql-smoke.err || true)"
 else
   echo "Running DB smoke test against ${TEST_HOST}:${TEST_PORT}/${DB_NAME} as ${DB_USER} ..."
   if command -v psql >/dev/null 2>&1; then
-    RESULT="$(run_psql "${TEST_HOST}" "${TEST_PORT}" 2>/tmp/directus-db-smoke.err || true)"
+    RESULT="$(run_psql "${TEST_HOST}" "${TEST_PORT}" 2>/tmp/postgresql-smoke.err || true)"
   elif command -v docker >/dev/null 2>&1; then
     RESULT="$(docker run --rm \
       -e PGPASSWORD="${DB_PASSWORD}" \
@@ -135,7 +135,7 @@ else
         -U "${DB_USER}" \
         -d "${DB_NAME}" \
         -Atc "SELECT current_user || '|' || current_database();" \
-      2>/tmp/directus-db-smoke.err || true)"
+      2>/tmp/postgresql-smoke.err || true)"
   else
     echo "Neither psql nor docker is available to run the smoke test."
     exit 1
@@ -147,8 +147,8 @@ AUTH_DB="$(printf '%s' "${RESULT}" | cut -d'|' -f2 | tr -d '\r')"
 
 if [ "${AUTH_USER}" != "${DB_USER}" ] || [ "${AUTH_DB}" != "${DB_NAME}" ]; then
   echo "Smoke test failed. Expected user=${DB_USER} db=${DB_NAME}; got user=${AUTH_USER:-<empty>} db=${AUTH_DB:-<empty>}."
-  if [ -f /tmp/directus-db-smoke.err ]; then
-    tail -n 3 /tmp/directus-db-smoke.err || true
+  if [ -f /tmp/postgresql-smoke.err ]; then
+    tail -n 3 /tmp/postgresql-smoke.err || true
   fi
   exit 1
 fi

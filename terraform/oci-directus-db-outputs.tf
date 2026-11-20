@@ -56,6 +56,11 @@ output "directus_db_user" {
   sensitive = true
 }
 
+output "db_user" {
+  value     = local.directus_db_user_effective
+  sensitive = true
+}
+
 output "db_tunnel_user" {
   value = var.db_tunnel_user
 }

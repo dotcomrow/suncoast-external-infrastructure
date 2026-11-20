@@ -81,7 +81,7 @@ vault write secret/data \
 Run a smoke test after apply:
 
 ```sh
-./scripts/smoke-test-oci-directus-db.sh
+./scripts/smoke-test-postgresql.sh
 ```
 
 The smoke test verifies:
