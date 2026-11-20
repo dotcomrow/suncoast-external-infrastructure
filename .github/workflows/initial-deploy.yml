@@ -1,0 +1,230 @@
+name: Initial create workflow
+
+# This manual-only trigger is used only while the workflow is first restored.
+# After GitHub records it as disabled_manually, the permanent push trigger is
+# restored without allowing this workflow to run against the existing state.
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type CREATE_EXTERNAL_INFRASTRUCTURE
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: external-infrastructure-initial-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: inputs.confirmation == 'CREATE_EXTERNAL_INFRASTRUCTURE'
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    env:
+      TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
+      TF_WORKSPACE: ${{ github.event.repository.name }}
+      TFE_AGENT_POOL_ID: ${{ vars.TFE_AGENT_POOL_ID }}
+      TFE_PROJECT: ${{ vars.TFE_PROJECT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      - name: Create empty HCP Terraform workspace
+        id: workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${TF_API_TOKEN:-}" ]] || {
+            echo "TFE_TOKEN is unavailable to this repository" >&2
+            exit 1
+          }
+          [[ -n "${TFE_PROJECT:-}" ]] || {
+            echo "TFE_PROJECT is unavailable to this repository" >&2
+            exit 1
+          }
+          [[ "${TFE_AGENT_POOL_ID:-}" == apool-* ]] || {
+            echo "TFE_AGENT_POOL_ID is missing or invalid" >&2
+            exit 1
+          }
+
+          api="https://app.terraform.io/api/v2"
+          auth_header="Authorization: Bearer ${TF_API_TOKEN}"
+          content_header="Content-Type: application/vnd.api+json"
+
+          api_get() {
+            curl --fail --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "$1"
+          }
+
+          projects_json="$(api_get "${api}/organizations/${TF_CLOUD_ORGANIZATION}/projects?page%5Bsize%5D=100")"
+          project_count="$(jq --arg name "${TFE_PROJECT}" '[.data[]? | select(.attributes.name == $name)] | length' <<<"${projects_json}")"
+          [[ "${project_count}" == "1" ]] || {
+            echo "Expected exactly one HCP Terraform project named ${TFE_PROJECT}; found ${project_count}" >&2
+            exit 1
+          }
+          project_id="$(jq -r --arg name "${TFE_PROJECT}" '.data[] | select(.attributes.name == $name) | .id' <<<"${projects_json}")"
+
+          workspace_status="$(curl --silent --show-error \
+            --output /tmp/workspace.json \
+            --write-out '%{http_code}' \
+            --header "${auth_header}" \
+            --header "${content_header}" \
+            "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces/${TF_WORKSPACE}")"
+
+          if [[ "${workspace_status}" == "404" ]]; then
+            payload="$(jq -n \
+              --arg name "${TF_WORKSPACE}" \
+              --arg project_id "${project_id}" \
+              --arg agent_pool_id "${TFE_AGENT_POOL_ID}" \
+              '{data:{type:"workspaces",attributes:{name:$name,"auto-apply":false,"execution-mode":"agent","agent-pool-id":$agent_pool_id,"setting-overwrites":{"execution-mode":true,"agent-pool":true}},relationships:{project:{data:{type:"projects",id:$project_id}}}}}')"
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${payload}" \
+              "${api}/organizations/${TF_CLOUD_ORGANIZATION}/workspaces" \
+              >/tmp/workspace.json
+            echo "Created HCP Terraform workspace ${TF_WORKSPACE}"
+          elif [[ "${workspace_status}" == "200" ]]; then
+            resource_count="$(jq -r '.data.attributes["resource-count"]' /tmp/workspace.json)"
+            [[ "${resource_count}" == "0" ]] || {
+              echo "Initial deployment refuses to use existing state containing ${resource_count} managed resources" >&2
+              exit 1
+            }
+            workspace_id="$(jq -r '.data.id' /tmp/workspace.json)"
+            payload="$(jq -n \
+              --arg project_id "${project_id}" \
+              --arg agent_pool_id "${TFE_AGENT_POOL_ID}" \
+              '{data:{type:"workspaces",attributes:{"auto-apply":false,"execution-mode":"agent","agent-pool-id":$agent_pool_id,"setting-overwrites":{"execution-mode":true,"agent-pool":true}},relationships:{project:{data:{type:"projects",id:$project_id}}}}}')"
+            curl --fail-with-body --silent --show-error \
+              --request PATCH \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              --data "${payload}" \
+              "${api}/workspaces/${workspace_id}" \
+              >/tmp/workspace.json
+            echo "Using verified-empty HCP Terraform workspace ${TF_WORKSPACE}"
+          else
+            cat /tmp/workspace.json >&2
+            exit 1
+          fi
+
+          workspace_id="$(jq -r '.data.id' /tmp/workspace.json)"
+          [[ "$(jq -r '.data.relationships.project.data.id' /tmp/workspace.json)" == "${project_id}" ]]
+          [[ "$(jq -r '.data.attributes["execution-mode"] // empty' /tmp/workspace.json)" == "agent" ]]
+          [[ "$(jq -r '.data.relationships["agent-pool"].data.id // empty' /tmp/workspace.json)" == "${TFE_AGENT_POOL_ID}" ]]
+
+          upsert_workspace_variable() {
+            local key="$1"
+            local value="$2"
+            local description="$3"
+            local variables_json variable_id payload
+
+            variables_json="$(api_get "${api}/workspaces/${workspace_id}/vars")"
+            variable_id="$(jq -r --arg key "${key}" '.data[]? | select(.attributes.key == $key and .attributes.category == "terraform") | .id' <<<"${variables_json}" | head -n1)"
+            if [[ -n "${variable_id}" ]]; then
+              payload="$(jq -n \
+                --arg id "${variable_id}" \
+                --arg key "${key}" \
+                --arg value "${value}" \
+                --arg description "${description}" \
+                '{data:{id:$id,type:"vars",attributes:{key:$key,value:$value,description:$description,category:"terraform",hcl:false,sensitive:false}}}')"
+              curl --fail-with-body --silent --show-error \
+                --request PATCH \
+                --header "${auth_header}" \
+                --header "${content_header}" \
+                --data "${payload}" \
+                "${api}/workspaces/${workspace_id}/vars/${variable_id}" >/dev/null
+            else
+              payload="$(jq -n \
+                --arg key "${key}" \
+                --arg value "${value}" \
+                --arg description "${description}" \
+                '{data:{type:"vars",attributes:{key:$key,value:$value,description:$description,category:"terraform",hcl:false,sensitive:false}}}')"
+              curl --fail-with-body --silent --show-error \
+                --request POST \
+                --header "${auth_header}" \
+                --header "${content_header}" \
+                --data "${payload}" \
+                "${api}/workspaces/${workspace_id}/vars" >/dev/null
+            fi
+          }
+
+          upsert_workspace_variable "project_name" "${TF_WORKSPACE}" "project name"
+          upsert_workspace_variable "org_name" "${TF_CLOUD_ORGANIZATION}" "organization name"
+          echo "workspace_id=${workspace_id}" >>"${GITHUB_OUTPUT}"
+
+      - name: Get next version
+        uses: reecetech/version-increment@a29aa752dc3b8118a2dc2ed93faf0e95a73a9c7e
+        id: version
+        with:
+          scheme: calver
+          increment: patch
+
+      - name: Upload Terraform configuration
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: upload
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          directory: terraform
+
+      - name: Create initial Terraform run
+        uses: hashicorp/tfc-workflows-github/actions/create-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: run
+        with:
+          workspace: ${{ env.TF_WORKSPACE }}
+          configuration_version: ${{ steps.upload.outputs.configuration_version_id }}
+          plan_only: false
+          message: Initial deployment from GitHub run ${{ github.run_id }}
+
+      - name: Read Terraform plan summary
+        uses: hashicorp/tfc-workflows-github/actions/plan-output@8e08d1ba957673f5fbf971a22b3219639dc45661
+        id: plan
+        with:
+          plan: ${{ steps.run.outputs.plan_id }}
+
+      - name: Apply initial Terraform run
+        uses: hashicorp/tfc-workflows-github/actions/apply-run@8e08d1ba957673f5fbf971a22b3219639dc45661
+        with:
+          run: ${{ steps.run.outputs.run_id }}
+          comment: Initial external-infrastructure deployment from GitHub run ${{ github.run_id }}
+
+      - name: Create release
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: process.env.VERSION,
+              target_commitish: 'prod',
+              name: process.env.VERSION,
+              generate_release_notes: true
+            });
+
+      - name: Disable initial workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/initial-deploy.yml/disable"
+
+      - name: Report initial deployment
+        shell: bash
+        run: |
+          echo "HCP Terraform run: ${{ steps.run.outputs.run_link }}"
+          echo "Plan summary: add=${{ steps.plan.outputs.add }}, change=${{ steps.plan.outputs.change }}, destroy=${{ steps.plan.outputs.destroy }}"
