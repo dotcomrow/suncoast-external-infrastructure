@@ -316,7 +316,10 @@ resource "oci_core_volume_attachment" "postgresql_data" {
   display_name                        = "${var.db_instance_name}-postgresql-data"
   instance_id                         = oci_core_instance.directus_db.id
   volume_id                           = oci_core_volume.postgresql_data.id
-  is_pv_encryption_in_transit_enabled = true
+  # E4.Flex does not support paravirtualized in-transit encryption. OCI block
+  # volumes remain encrypted at rest; enabling this unsupported attachment
+  # option causes the API to reject the volume attachment.
+  is_pv_encryption_in_transit_enabled = false
   is_read_only                        = false
   is_shareable                        = false
 }
