@@ -24,7 +24,7 @@ jobs:
 
           inspect_workspace() {
             local workspace_name="$1"
-            local response workspace_id
+            local response workspace_id current_run_id runs_response run_response
 
             echo "=== ${workspace_name} ==="
             response="$(curl --fail-with-body --silent --show-error \
@@ -51,6 +51,14 @@ jobs:
                 "speculative-enabled",
                 "structured-run-output-enabled",
                 "assessments-enabled",
+                "allow-destroy-plan",
+                "auto-destroy-at",
+                "auto-destroy-activity-duration",
+                description,
+                "setting-overwrites",
+                "tag-names",
+                "trigger-patterns",
+                "vcs-repo",
                 "created-at",
                 "updated-at",
                 source,
@@ -66,6 +74,50 @@ jobs:
                          end
               ))
             }' <<<"${response}"
+
+            runs_response="$(curl --fail-with-body --silent --show-error \
+              --header "${auth_header}" \
+              --header "${content_header}" \
+              "${api}/workspaces/${workspace_id}/runs?page%5Bsize%5D=10")"
+            jq '[.data[] | {
+              id,
+              status: .attributes.status,
+              message: .attributes.message,
+              source: .attributes.source,
+              "created-at": .attributes["created-at"],
+              "plan-only": .attributes["plan-only"],
+              "auto-apply": .attributes["auto-apply"],
+              actions: .attributes.actions
+            }]' <<<"${runs_response}"
+
+            current_run_id="$(jq -r '.data.relationships["current-run"].data.id // empty' <<<"${response}")"
+            if [[ -n "${current_run_id}" ]]; then
+              run_response="$(curl --fail-with-body --silent --show-error \
+                --header "${auth_header}" \
+                --header "${content_header}" \
+                "${api}/runs/${current_run_id}")"
+              jq '{
+                id: .data.id,
+                attributes: (.data.attributes | {
+                  status,
+                  message,
+                  source,
+                  "created-at",
+                  "plan-only",
+                  "auto-apply",
+                  actions,
+                  permissions
+                }),
+                relationships: (.data.relationships | with_entries(
+                  .value = if .value.data == null then null
+                           elif (.value.data | type) == "array" then
+                             [.value.data[] | {id, type}]
+                           else
+                             {id: .value.data.id, type: .value.data.type}
+                           end
+                ))
+              }' <<<"${run_response}"
+            fi
 
             for endpoint in \
               "workspaces/${workspace_id}/runs?page%5Bsize%5D=1" \
