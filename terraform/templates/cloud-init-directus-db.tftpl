@@ -7,8 +7,132 @@ packages:
   - nfs-kernel-server
   - rpcbind
   - logrotate
+  - rsync
 
 write_files:
+  - path: /usr/local/sbin/prepare-postgresql-data-volume.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      DATA_DEVICE=$(cat <<'EOF_DATA_DEVICE'
+      ${postgresql_data_volume_device}
+      EOF_DATA_DEVICE
+      )
+      DATA_MOUNT=$(cat <<'EOF_DATA_MOUNT'
+      ${postgresql_data_mount_path}
+      EOF_DATA_MOUNT
+      )
+      DATA_DEVICE="$(printf '%s' "$DATA_DEVICE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DATA_MOUNT="$(printf '%s' "$DATA_MOUNT" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      DATA_LABEL="postgresql-data"
+
+      if [ -z "$DATA_DEVICE" ] || [ -z "$DATA_MOUNT" ] || [ "$DATA_MOUNT" = "/" ]; then
+        echo "PostgreSQL data-volume device or mount path is invalid."
+        exit 1
+      fi
+
+      # Terraform creates the attachment after the instance exists, so a fresh
+      # VM can begin cloud-init before the block device is visible.
+      wait_seconds=0
+      while [ ! -b "$DATA_DEVICE" ]; do
+        if [ "$wait_seconds" -ge 1800 ]; then
+          echo "Timed out waiting for PostgreSQL data volume: $DATA_DEVICE"
+          exit 1
+        fi
+        sleep 5
+        wait_seconds=$((wait_seconds + 5))
+      done
+
+      systemctl stop postgresql || true
+
+      filesystem_type="$(blkid -o value -s TYPE "$DATA_DEVICE" 2>/dev/null || true)"
+      initialized_now="false"
+      if [ -z "$filesystem_type" ]; then
+        # A signature of any kind means the device is not blank. Never format
+        # such a device automatically; this protects an existing data volume.
+        if wipefs -n "$DATA_DEVICE" 2>/dev/null | grep -q .; then
+          echo "Refusing to format $DATA_DEVICE because it contains an unrecognized disk signature."
+          exit 1
+        fi
+        mkfs.ext4 -L "$DATA_LABEL" "$DATA_DEVICE"
+        filesystem_type="ext4"
+        initialized_now="true"
+      elif [ "$filesystem_type" != "ext4" ]; then
+        echo "Refusing to mount $DATA_DEVICE: expected ext4, found $filesystem_type."
+        exit 1
+      fi
+
+      filesystem_uuid="$(blkid -o value -s UUID "$DATA_DEVICE")"
+      if [ -z "$filesystem_uuid" ]; then
+        echo "Unable to determine filesystem UUID for $DATA_DEVICE."
+        exit 1
+      fi
+
+      if [ "$initialized_now" = "true" ]; then
+        temporary_mount="/mnt/postgresql-data-bootstrap"
+        install -d -m 0755 "$temporary_mount"
+        mount "$DATA_DEVICE" "$temporary_mount"
+        if [ -d "$DATA_MOUNT" ]; then
+          rsync -aHAX --numeric-ids "$DATA_MOUNT/" "$temporary_mount/"
+        fi
+        umount "$temporary_mount"
+      fi
+
+      install -d -m 0755 -o postgres -g postgres "$DATA_MOUNT"
+      awk -v mount_path="$DATA_MOUNT" '$2 != mount_path { print }' /etc/fstab > /tmp/fstab.postgresql-data
+      printf 'UUID=%s %s ext4 defaults,_netdev,nofail 0 2\n' "$filesystem_uuid" "$DATA_MOUNT" >> /tmp/fstab.postgresql-data
+      install -m 0644 /tmp/fstab.postgresql-data /etc/fstab
+      rm -f /tmp/fstab.postgresql-data
+
+      if ! mountpoint -q "$DATA_MOUNT"; then
+        mount "$DATA_MOUNT"
+      fi
+      # OCI expands block volumes in place. Grow the ext4 filesystem whenever
+      # the provisioned device is larger than the existing filesystem.
+      resize2fs "$DATA_DEVICE"
+      chown postgres:postgres "$DATA_MOUNT"
+      chmod 0755 "$DATA_MOUNT"
+
+      pg_major="$(psql --version | awk '{print $3}' | cut -d. -f1)"
+      if [ ! -f "$DATA_MOUNT/$pg_major/main/PG_VERSION" ]; then
+        echo "PostgreSQL cluster data was not found at $DATA_MOUNT/$pg_major/main."
+        exit 1
+      fi
+
+      # PostgreSQL must fail closed rather than silently writing database data
+      # back to the boot volume if the dedicated volume is ever unavailable.
+      install -d -m 0755 /etc/systemd/system/postgresql@.service.d
+      cat > /etc/systemd/system/postgresql@.service.d/10-require-data-volume.conf <<EOF_SYSTEMD
+      [Unit]
+      RequiresMountsFor=$DATA_MOUNT
+
+      [Service]
+      ExecStartPre=/usr/bin/mountpoint -q $DATA_MOUNT
+      EOF_SYSTEMD
+      systemctl daemon-reload
+      systemctl enable postgresql-data-volume-resize.service
+
+      echo "PostgreSQL data volume ready at $DATA_MOUNT."
+
+  - path: /etc/systemd/system/postgresql-data-volume-resize.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Grow the PostgreSQL data filesystem to the OCI block volume size
+      RequiresMountsFor=${postgresql_data_mount_path}
+      Before=postgresql.service postgresql@.service
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/resize2fs ${postgresql_data_volume_device}
+
+      [Install]
+      WantedBy=multi-user.target
+
   - path: /usr/local/sbin/bootstrap-directus-postgres.sh
     owner: root:root
     permissions: "0750"
@@ -626,6 +750,7 @@ write_files:
       }
 
 runcmd:
+  - [bash, /usr/local/sbin/prepare-postgresql-data-volume.sh]
   - [bash, /usr/local/sbin/bootstrap-directus-postgres.sh]
   - [systemctl, daemon-reload]
   - [systemctl, restart, systemd-journald]

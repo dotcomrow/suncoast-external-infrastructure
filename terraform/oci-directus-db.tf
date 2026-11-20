@@ -260,13 +260,23 @@ resource "oci_core_instance" "directus_db" {
       directus_uploads_nfs_mountd_port      = tostring(var.directus_uploads_nfs_mountd_port)
       directus_uploads_nfs_allowed_cidrs    = join("\n", var.directus_uploads_nfs_allowed_cidrs)
       directus_uploads_nfs_exports          = local.directus_uploads_nfs_exports
+      postgresql_data_volume_device         = var.postgresql_data_volume_device
+      postgresql_data_mount_path            = var.postgresql_data_mount_path
     }))
     ssh_authorized_keys = join("\n", local.instance_ssh_authorized_keys)
   }
 
   lifecycle {
     prevent_destroy = true
-    ignore_changes  = all
+    # The image and first-boot metadata describe how a replacement VM is built.
+    # They must not be pushed onto the existing VM. Shape configuration remains
+    # managed so OCPU, memory, and baseline changes are intentional in-place
+    # updates instead of console-only drift.
+    ignore_changes = [
+      source_details[0].source_id,
+      metadata["user_data"],
+      metadata["ssh_authorized_keys"],
+    ]
 
     precondition {
       condition     = var.db_ocpus >= 1
@@ -286,6 +296,29 @@ resource "oci_core_instance" "directus_db" {
       error_message = "When enable_db_ssh_tunnel=true, set both db_tunnel_private_key_b64 and db_tunnel_public_key together, or leave both unset to auto-generate."
     }
   }
+}
+
+resource "oci_core_volume" "postgresql_data" {
+  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
+  compartment_id      = local.oci_compartment_ocid
+  display_name        = "${var.db_instance_name}-postgresql-data"
+  size_in_gbs         = var.postgresql_data_volume_size_gb
+  vpus_per_gb         = var.postgresql_data_volume_vpus_per_gb
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "oci_core_volume_attachment" "postgresql_data" {
+  attachment_type                     = "paravirtualized"
+  device                              = var.postgresql_data_volume_device
+  display_name                        = "${var.db_instance_name}-postgresql-data"
+  instance_id                         = oci_core_instance.directus_db.id
+  volume_id                           = oci_core_volume.postgresql_data.id
+  is_pv_encryption_in_transit_enabled = true
+  is_read_only                        = false
+  is_shareable                        = false
 }
 
 data "oci_core_vnic_attachments" "directus_db" {

@@ -22,6 +22,26 @@ output "db_port" {
   value = 5432
 }
 
+output "postgresql_data_volume_id" {
+  value = oci_core_volume.postgresql_data.id
+}
+
+output "postgresql_data_volume_size_gb" {
+  value = oci_core_volume.postgresql_data.size_in_gbs
+}
+
+output "postgresql_data_volume_vpus_per_gb" {
+  value = oci_core_volume.postgresql_data.vpus_per_gb
+}
+
+output "postgresql_data_volume_device" {
+  value = var.postgresql_data_volume_device
+}
+
+output "postgresql_data_mount_path" {
+  value = var.postgresql_data_mount_path
+}
+
 output "db_name" {
   value     = local.db_name_effective
   sensitive = true

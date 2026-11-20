@@ -1,134 +1,139 @@
-# Oracle Directus DB VM (Paid Tiny Tier)
+# Oracle PostgreSQL VM
 
-This stack provisions a small paid Oracle Cloud VM for PostgreSQL and bootstraps a Directus database/user idempotently. It now lives in the main `terraform/` module so GitHub Actions can plan/apply GCP + OCI in one run.
+This repository owns the Oracle Cloud Infrastructure VM and durable storage
+that remain available when the RKE2 platform is rebuilt. Historical Terraform
+resource names containing `directus_db` are retained to preserve resource
+addresses; the VM is the shared external PostgreSQL host for applications that
+contain non-reproducible data.
 
-## Why this stack
+## Managed architecture
 
-- Keeps DB state outside the k8s platform.
-- Uses explicit `directus_db_user` / `directus_db_password` variables so credentials stay constant across platform rebuilds.
-- The existing OCI stack is frozen with `prevent_destroy = true` and
-  `ignore_changes = all`. Terraform retains and reads these state objects but
-  must not update or replace the VM, its network dependencies, reserved public
-  IP, or tunnel key from this shared workspace.
-- Repository-triggered Terraform Cloud runs are plan-only. Never approve a
-  full apply unless the reviewed plan contains zero OCI changes.
-- Uses an automated SSH tunnel path by default (`enable_db_ssh_tunnel=true`):
-  - PostgreSQL listens on localhost only.
-  - No public ingress rule for 5432 is created.
-  - Cloud-init creates the tunnel user and installs the tunnel public key automatically.
-  - Terraform exposes a Vault-ready secret payload for Directus.
-- Cloud-init can also export `/srv/directus/uploads` over NFS (`enable_directus_uploads_nfs=true`) so Directus uploads/media/files live on the OCI VM.
-  - OCI security rules are created automatically for NFS.
-  - Cloud-init pins NFS daemon ports and verifies NFS/export readiness during first boot.
-  - A systemd guardian now runs continuously to re-assert NFS firewall/service health and bound log growth.
+- `VM.Standard.E4.Flex` Ubuntu VM.
+- Existing 500 GB boot volume for the operating system, installed software,
+  configuration, and the Directus uploads NFS export.
+- Separate OCI block volume mounted at `/var/lib/postgresql` for database data.
+- Reserved public IP and SSH-tunneled PostgreSQL connectivity.
+- OCI network resources and the Directus uploads NFS export.
+- Vault-provided OCI credentials, Directus database credentials, and the stable
+  database-tunnel identity.
 
-## Usage
+The separate PostgreSQL volume is protected by `prevent_destroy`. Its attachment
+is intentionally replaceable so the same durable volume can be detached from a
+retired VM and attached to a replacement VM.
+
+## Budget development configuration
+
+The defaults are sized for development traffic while keeping the total near the
+current $50 monthly ceiling:
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `db_ocpus` | `2` | 2 OCPUs / 4 x86 vCPUs |
+| `db_memory_gbs` | `8` | Memory for several low-traffic databases |
+| `db_baseline_utilization` | `BASELINE_1_8` | 12.5% sustained CPU billing with burst capacity |
+| `db_boot_volume_size_gb` | `500` | Existing boot volume; unchanged |
+| `postgresql_data_volume_size_gb` | `500` | Dedicated database capacity |
+| `postgresql_data_volume_vpus_per_gb` | `0` | OCI Lower Cost performance for development |
+
+At November 2026 public list prices, the incremental 500 GB Lower Cost volume is
+about $12.75/month, one additional OCPU at the 12.5% baseline is about
+$2.99/month, and the additional 6 GB RAM is about $8.61/month. Anchored to the
+current approximately $25 bill, the estimated total is about $49.35/month before
+taxes, backups, discounts, or credits.
+
+Lower Cost changes performance, not persistence. At 500 GB it provides up to
+approximately 1,000 IOPS and 120 MB/s. This is suitable for present development
+traffic. Production traffic should be justified by measurements and normally
+move the volume to Balanced performance.
+
+## Scaling without replacement
+
+- Increase `db_memory_gbs` or `db_ocpus` when observed usage requires it. Shape
+  updates are in place but can reboot the VM.
+- Change `postgresql_data_volume_vpus_per_gb` from `0` to `10` for Balanced
+  performance. OCI updates the volume performance tier in place.
+- Increase `postgresql_data_volume_size_gb` when capacity requires it. OCI grows
+  the volume in place; volume size cannot be reduced.
+- The first-boot/recovery script and an enabled systemd service run `resize2fs`
+  so a rebuilt or rebooted VM adopts all provisioned capacity on the
+  whole-device ext4 filesystem.
+
+The current image ID and first-boot metadata are ignored for the running VM so a
+new Ubuntu image or cloud-init template does not replace or unexpectedly mutate
+it. CPU, memory, baseline utilization, and boot-volume size are no longer hidden
+by `ignore_changes = all`, allowing reviewed in-place updates.
+
+## Fresh-build and recovery behavior
+
+Terraform creates the data volume in the same availability domain as the VM and
+attaches it at the consistent path `/dev/oracleoci/oraclevdb`. Cloud-init then:
+
+1. Waits for Terraform's volume attachment to appear.
+2. Stops PostgreSQL before touching its data directory.
+3. Formats the device only when it has no filesystem signature.
+4. Copies the newly installed PostgreSQL cluster to a new blank volume.
+5. Adopts an existing ext4 filesystem without formatting it.
+6. Mounts the filesystem by UUID at `/var/lib/postgresql`.
+7. Verifies that the expected PostgreSQL cluster exists.
+8. Installs a systemd requirement that prevents PostgreSQL from starting when
+   the dedicated mount is unavailable.
+9. Creates the Directus role and database only when they do not already exist.
+
+This fail-closed behavior prevents a rebuilt VM from silently creating a new
+database cluster on its boot volume when the durable volume is missing.
+
+## Existing-VM migration boundary
+
+Applying this Terraform configuration to the existing VM creates and attaches
+the empty volume and updates the flexible shape. It does not rerun cloud-init or
+move live PostgreSQL files.
+
+Moving the current cluster is a separate maintenance operation:
+
+1. Verify a PostgreSQL logical backup and OCI recovery point.
+2. Confirm the new attachment and device identity.
+3. Stop database clients and PostgreSQL.
+4. Format and mount the new volume using the end-state label and mount contract.
+5. Copy the cluster while preserving ownership, permissions, hard links, ACLs,
+   and extended attributes.
+6. Install the UUID-based mount and PostgreSQL systemd dependency.
+7. Start PostgreSQL and validate all databases and application connections.
+8. Retain the boot-volume copy until the new volume and backups are verified.
+
+The manual migration gets the running VM to the scripted end state. It is not
+part of normal rebuild automation and must not be run by Terraform against a
+live database.
+
+## Connectivity
+
+- PostgreSQL listens on localhost when `enable_db_ssh_tunnel=true`.
+- Applications use SSH port forwarding to reach PostgreSQL without exposing
+  port 5432 publicly.
+- The stable tunnel key and database credentials are read from Vault by the
+  existing self-hosted Terraform agent.
+- NFS ingress is managed separately for the Directus uploads export.
+
+## Deployment workflow
+
+Pushes that change `terraform/**` create speculative HCP Terraform plans. They
+do not apply automatically. An intentional apply uses the `Infra Deploy`
+workflow with `apply=true` and confirmation phrase
+`APPLY_EXTERNAL_INFRASTRUCTURE`.
+
+Review the plan for these expected actions before applying the first storage and
+shape update:
+
+- One new OCI block volume.
+- One new paravirtualized volume attachment.
+- An in-place VM shape update.
+- No VM, boot-volume, network, reserved-IP, or tunnel-key replacement.
+
+After infrastructure and the manual data move are complete, run:
 
 ```sh
 cd terraform
-terraform init
-terraform apply \
-  -var "oci_tenancy_ocid=..." \
-  -var "oci_user_ocid=..." \
-  -var "oci_fingerprint=..." \
-  -var "oci_private_key=${OCI_PRIVATE_KEY_PEM}" \
-  -var "oci_region=us-phoenix-1" \
-  -var "oci_compartment_ocid=..." \
-  -var "directus_db_user=directus_app" \
-  -var "directus_db_password=REPLACE_WITH_LONG_SECRET" \
-  -var 'ssh_authorized_keys=["ssh-ed25519 AAAA..."]' \
-  -var 'db_allowed_cidrs=["X.X.X.X/32"]' \
-  -var 'ssh_allowed_cidrs=["Y.Y.Y.Y/32"]'
-```
-
-Note: `db_allowed_cidrs` is used only when `enable_db_ssh_tunnel=false`.
-
-For Terraform Cloud, create a sensitive variable named `oci_private_key` and paste the full PEM key contents (including `-----BEGIN ...-----` / `-----END ...-----` lines).
-
-### Stable tunnel credentials (recommended)
-
-To keep SSH tunnel auth stable even if Terraform state/workspace changes, set both of these Terraform variables once and keep them fixed:
-
-- `db_tunnel_private_key_b64` (sensitive): base64 of the OpenSSH private key file.
-- `db_tunnel_public_key`: matching OpenSSH public key line.
-
-If both are set, Terraform uses them directly instead of generating a new keypair.
-
-Example key generation:
-
-```sh
-ssh-keygen -t ed25519 -N '' -f ./directus-db-tunnel
-base64 < ./directus-db-tunnel | tr -d '\n'
-cat ./directus-db-tunnel.pub
-```
-
-Then seed Vault for Directus.
-
-If your Vault policy allows nested paths:
-
-```sh
-vault write secret/data/directus/db \
-  data="$(terraform output -json vault_secret_directus_db | jq -c '.value')"
-```
-
-If human-managed secrets must live only at root `secret/data`:
-
-```sh
-vault write secret/data \
-  data="$(terraform output -json vault_secret_directus_db_root | jq -c '.value')"
-```
-
-Run a smoke test after apply:
-
-```sh
 ./scripts/smoke-test-postgresql.sh
 ```
 
-The smoke test verifies:
-- PostgreSQL is reachable.
-- The configured username/password can authenticate.
-- The active user and database match the expected values.
-- In tunnel mode, SSH key auth to the tunnel user succeeds (fails fast with SSH error output if not).
-
-For key troubleshooting, compare outputs:
-
-```sh
-terraform output -raw db_tunnel_public_key
-terraform output -raw db_tunnel_private_key_b64 | base64 --decode | ssh-keygen -y -f /dev/stdin
-```
-
-## Cost knobs
-
-- `db_baseline_utilization` default is `BASELINE_1_8` (lowest burstable baseline).
-- `db_memory_gbs` default is `2` for a small but usable Postgres footprint.
-- `db_ocpus` default is `1` (minimum for `VM.Standard.E4.Flex`).
-
-## Directus behavior
-
-- Keep Vault DB credentials aligned with the same `directus_db_user` and `directus_db_password` values from Terraform.
-- Directus startup in this repo checks for `directus.directus_migrations`; if present, it skips `database install` and uses the existing DB.
-- Directus reads optional tunnel fields from `secret/data/directus/db` (or root `secret/data` with `directus_db_*` keys) and uses an in-pod SSH tunnel when enabled.
-- Upload/media/file storage is backed by the OCI VM NFS export in [manifests/10-directus-config.yaml](../manifests/10-directus-config.yaml).
-  Keep the PV `nfs.server` value aligned with `terraform output -raw directus_uploads_nfs_host`.
-
-## Connectivity Model
-
-- Default model: private DB access over automated SSH tunnel (encrypted) with Postgres bound to localhost.
-- Port `22` is still required for the tunnel endpoint; lock `ssh_allowed_cidrs` down to your cluster egress IP/CIDR.
-- For uploads on NFS, Terraform now opens the required OCI ingress rules automatically:
-  - Always: `2049/tcp` and `2049/udp`.
-  - If `directus_uploads_nfs_enable_v3_compat=true` (default): `111/tcp+udp` and `20048/tcp+udp`.
-- `directus_uploads_nfs_allowed_cidrs` must be valid CIDR notation (for example `64.251.17.245/32` or `0.0.0.0/0`).
-  A value like `0.0.0.0` (without `/0`) is invalid and will now fail validation.
-- Cloud-init also inserts host `iptables` INPUT allow rules for those NFS ports (before any final REJECT rule)
-  using `directus_uploads_nfs_allowed_cidrs`.
-  - Those rules are now persisted to `/etc/iptables/rules.v4` and re-applied by a guardian timer.
-
-## Cloud-init scope
-
-- Cloud-init fully automates PostgreSQL install/bootstrap and tunnel-user setup at VM creation time.
-- Cloud-init also installs a continuous systemd guard (`directus-db-guardian.timer`) that:
-  - Restarts required services when unhealthy (`postgresql`, `rpcbind`, `nfs-kernel-server`, `ssh`).
-  - Re-applies NFS `iptables` allow rules if missing.
-  - Persists firewall rules for reboot durability.
-  - Enforces bounded journal usage and triggers emergency log vacuum/rotation under disk pressure.
+The smoke test validates tunnel authentication, PostgreSQL authentication, and
+the expected database identity.

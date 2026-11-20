@@ -11,15 +11,15 @@ variable "db_shape" {
 }
 
 variable "db_ocpus" {
-  description = "OCPU count for the shape."
+  description = "OCPU count for the flexible shape. One x86 OCPU equals two vCPUs."
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "db_memory_gbs" {
-  description = "RAM in GB for the shape. 2 GB is a practical minimum for small Postgres usage."
+  description = "RAM in GB for the PostgreSQL VM. Memory can be increased later without replacing the instance."
   type        = number
-  default     = 2
+  default     = 8
 }
 
 variable "db_baseline_utilization" {
@@ -38,9 +38,56 @@ variable "db_baseline_utilization" {
 }
 
 variable "db_boot_volume_size_gb" {
-  description = "Boot volume size in GB."
+  description = "Boot volume size in GB. PostgreSQL data is stored on a separate block volume."
   type        = number
   default     = 500
+}
+
+variable "postgresql_data_volume_size_gb" {
+  description = "Dedicated PostgreSQL data volume size in GB. OCI supports increasing this value in place; it cannot be reduced."
+  type        = number
+  default     = 500
+
+  validation {
+    condition     = var.postgresql_data_volume_size_gb >= 50 && var.postgresql_data_volume_size_gb <= 32768
+    error_message = "postgresql_data_volume_size_gb must be between 50 and 32768 GB."
+  }
+}
+
+variable "postgresql_data_volume_vpus_per_gb" {
+  description = "OCI block-volume performance units per GB. Start at 0 (Lower Cost); change to 10 (Balanced) when database traffic requires it."
+  type        = number
+  default     = 0
+
+  validation {
+    condition = contains([0, 10, 20], var.postgresql_data_volume_vpus_per_gb) || (
+      var.postgresql_data_volume_vpus_per_gb >= 30 &&
+      var.postgresql_data_volume_vpus_per_gb <= 120
+    )
+    error_message = "postgresql_data_volume_vpus_per_gb must be 0, 10, 20, or a value from 30 through 120."
+  }
+}
+
+variable "postgresql_data_volume_device" {
+  description = "Stable OCI device path assigned to the PostgreSQL data volume attachment."
+  type        = string
+  default     = "/dev/oracleoci/oraclevdb"
+
+  validation {
+    condition     = can(regex("^/dev/oracleoci/oraclevd[b-z]$", var.postgresql_data_volume_device))
+    error_message = "postgresql_data_volume_device must be a non-boot OCI consistent device path such as /dev/oracleoci/oraclevdb."
+  }
+}
+
+variable "postgresql_data_mount_path" {
+  description = "Mount point for the dedicated PostgreSQL data volume."
+  type        = string
+  default     = "/var/lib/postgresql"
+
+  validation {
+    condition     = startswith(var.postgresql_data_mount_path, "/") && var.postgresql_data_mount_path != "/"
+    error_message = "postgresql_data_mount_path must be an absolute path other than /."
+  }
 }
 
 variable "assign_public_ip" {
