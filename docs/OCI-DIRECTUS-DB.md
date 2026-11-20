@@ -28,7 +28,7 @@ current $50 monthly ceiling:
 
 | Setting | Default | Purpose |
 | --- | ---: | --- |
-| `db_ocpus` | `2` | 2 OCPUs / 4 x86 vCPUs |
+| `db_ocpus` | `1` | 1 OCPU / 2 x86 vCPUs |
 | `db_memory_gbs` | `8` | Memory for several low-traffic databases |
 | `db_baseline_utilization` | `BASELINE_1_8` | 12.5% sustained CPU billing with burst capacity |
 | `db_boot_volume_size_gb` | `500` | Existing boot volume; unchanged |
@@ -36,10 +36,9 @@ current $50 monthly ceiling:
 | `postgresql_data_volume_vpus_per_gb` | `0` | OCI Lower Cost performance for development |
 
 At November 2026 public list prices, the incremental 500 GB Lower Cost volume is
-about $12.75/month, one additional OCPU at the 12.5% baseline is about
-$2.99/month, and the additional 6 GB RAM is about $8.61/month. Anchored to the
-current approximately $25 bill, the estimated total is about $49.35/month before
-taxes, backups, discounts, or credits.
+about $12.75/month and the additional 6 GB RAM is about $8.61/month. Anchored to
+the current approximately $25 bill, the estimated total is about $46.36/month
+before taxes, backups, discounts, or credits.
 
 Lower Cost changes performance, not persistence. At 500 GB it provides up to
 approximately 1,000 IOPS and 120 MB/s. This is suitable for present development

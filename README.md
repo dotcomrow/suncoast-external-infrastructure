@@ -66,10 +66,10 @@ The VM and durable OCI resources use `prevent_destroy = true`, HCP Terraform
 auto-apply is disabled, and the workflow requires an explicit apply request and
 confirmation phrase. Review every applicable plan before dispatching it.
 
-The budget development configuration is 2 OCPUs (4 vCPUs), 8 GB RAM, a 12.5%
+The budget development configuration is 1 OCPU (2 vCPUs), 8 GB RAM, a 12.5%
 burstable CPU baseline, the unchanged 500 GB boot volume, and a separate 500 GB
 Lower Cost PostgreSQL volume. At November 2026 public list prices, this is
-approximately $49/month when anchored to the current approximately $25/month
+approximately $46/month when anchored to the current approximately $25/month
 bill. The database volume's capacity and performance tier and the VM's CPU and
 RAM are variables so production growth does not require rebuilding the VM.
 

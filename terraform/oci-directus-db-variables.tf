@@ -13,7 +13,7 @@ variable "db_shape" {
 variable "db_ocpus" {
   description = "OCPU count for the flexible shape. One x86 OCPU equals two vCPUs."
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "db_memory_gbs" {
