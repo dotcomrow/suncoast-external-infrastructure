@@ -9,7 +9,7 @@ on:
         type: string
 
 permissions:
-  actions: write
+  actions: read
   contents: read
 
 concurrency:
@@ -94,9 +94,8 @@ jobs:
         with:
           plan: ${{ steps.run.outputs.plan_id }}
 
-      - name: Mark migration complete only after a clean plan
+      - name: Require a clean final plan
         env:
-          GH_TOKEN: ${{ github.token }}
           PLAN_ADD: ${{ steps.plan.outputs.add }}
           PLAN_CHANGE: ${{ steps.plan.outputs.change }}
           PLAN_DESTROY: ${{ steps.plan.outputs.destroy }}
@@ -107,6 +106,4 @@ jobs:
             echo "Final target plan is not clean: add=${PLAN_ADD}, change=${PLAN_CHANGE}, destroy=${PLAN_DESTROY}" >&2
             exit 1
           }
-          gh variable set STATE_MIGRATION_COMPLETE --body true
-          echo "STATE_MIGRATION_COMPLETE=true"
           echo "Final zero-change run: ${{ steps.run.outputs.run_link }}"
