@@ -1,15 +1,7 @@
 name: Initial create workflow
 
-# This manual-only trigger is used only while the workflow is first restored.
-# After GitHub records it as disabled_manually, the permanent push trigger is
-# restored without allowing this workflow to run against the existing state.
 on:
-  workflow_dispatch:
-    inputs:
-      confirmation:
-        description: Type CREATE_EXTERNAL_INFRASTRUCTURE
-        required: true
-        type: string
+  push:
 
 permissions:
   actions: write
@@ -21,7 +13,6 @@ concurrency:
 
 jobs:
   deploy:
-    if: inputs.confirmation == 'CREATE_EXTERNAL_INFRASTRUCTURE'
     name: Build and deploy
     runs-on: ubuntu-latest
     env:
