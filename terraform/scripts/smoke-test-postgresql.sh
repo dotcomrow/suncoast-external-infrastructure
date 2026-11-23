@@ -128,7 +128,7 @@ else
   elif command -v docker >/dev/null 2>&1; then
     RESULT="$(docker run --rm \
       -e PGPASSWORD="${DB_PASSWORD}" \
-      postgres:16-alpine \
+      postgres:18.7-alpine \
       psql \
         -h "${TEST_HOST}" \
         -p "${TEST_PORT}" \

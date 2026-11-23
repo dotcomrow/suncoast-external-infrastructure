@@ -12,6 +12,7 @@ contain non-reproducible data.
 - Existing 500 GB boot volume for the operating system, installed software,
   configuration, and the Directus uploads NFS export.
 - Separate OCI block volume mounted at `/var/lib/postgresql` for database data.
+- PostgreSQL 18 installed from the official PGDG repository.
 - Reserved public IP and SSH-tunneled PostgreSQL connectivity.
 - OCI network resources and the Directus uploads NFS export.
 - Vault-provided OCI credentials, Directus database credentials, and the stable
@@ -70,16 +71,18 @@ attaches it paravirtualized. Cloud-init prefers the legacy
 non-boot Oracle BlockVolume and then persists the mount by filesystem UUID and
 label. Cloud-init then:
 
-1. Waits for Terraform's volume attachment to appear.
-2. Stops PostgreSQL before touching its data directory.
-3. Formats the device only when it has no filesystem signature.
-4. Copies the newly installed PostgreSQL cluster to a new blank volume.
-5. Adopts an existing ext4 filesystem without formatting it.
-6. Mounts the filesystem by UUID at `/var/lib/postgresql`.
-7. Verifies that the expected PostgreSQL cluster exists.
-8. Installs a systemd requirement that prevents PostgreSQL from starting when
+1. Installs PostgreSQL 18 directly from PGDG without the moving `postgresql`
+   meta-package.
+2. Waits for Terraform's volume attachment to appear.
+3. Stops PostgreSQL before touching its data directory.
+4. Formats the device only when it has no filesystem signature.
+5. Copies the newly installed PostgreSQL 18 cluster to a new blank volume.
+6. Adopts an existing ext4 filesystem without formatting it.
+7. Mounts the filesystem by UUID at `/var/lib/postgresql`.
+8. Verifies that the expected PostgreSQL 18 cluster exists.
+9. Installs a systemd requirement that prevents PostgreSQL from starting when
    the dedicated mount is unavailable.
-9. Creates the Directus role and database only when they do not already exist.
+10. Creates the Directus role and database only when they do not already exist.
 
 This fail-closed behavior prevents a rebuilt VM from silently creating a new
 database cluster on its boot volume when the durable volume is missing.

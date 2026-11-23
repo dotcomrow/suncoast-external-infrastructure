@@ -2,14 +2,51 @@
 package_update: true
 package_upgrade: false
 packages:
-  - postgresql
-  - postgresql-contrib
+  - ca-certificates
+  - curl
+  - gpg
   - nfs-kernel-server
   - rpcbind
   - logrotate
   - rsync
 
 write_files:
+  - path: /usr/local/sbin/install-postgresql-18.sh
+    owner: root:root
+    permissions: "0750"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      export DEBIAN_FRONTEND=noninteractive
+      key_path="/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc"
+      expected_fingerprint="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+
+      install -d -m 0755 "$(dirname "$key_path")"
+      curl --fail --show-error --silent \
+        -o "$key_path" \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc
+      actual_fingerprint="$(gpg --show-keys --with-colons "$key_path" | awk -F: '$1 == "fpr" {print $10; exit}')"
+      if [ "$actual_fingerprint" != "$expected_fingerprint" ]; then
+        echo "Unexpected PostgreSQL repository key fingerprint: $actual_fingerprint" >&2
+        exit 1
+      fi
+
+      cat > /etc/apt/sources.list.d/pgdg.sources <<EOF_PGDG
+      Types: deb
+      URIs: https://apt.postgresql.org/pub/repos/apt
+      Suites: noble-pgdg
+      Architectures: amd64
+      Components: main
+      Signed-By: $key_path
+      EOF_PGDG
+
+      apt-get update
+      # Install the requested major directly. Do not install the moving
+      # `postgresql` meta-package, which would pull the newest PGDG major.
+      apt-get install -y postgresql-18 postgresql-client-18
+      test "$(/usr/lib/postgresql/18/bin/postgres --version | awk '{print $3}' | cut -d. -f1)" = "18"
+
   - path: /usr/local/sbin/prepare-postgresql-data-volume.sh
     owner: root:root
     permissions: "0750"
@@ -786,6 +823,7 @@ write_files:
       }
 
 runcmd:
+  - [bash, /usr/local/sbin/install-postgresql-18.sh]
   - [bash, /usr/local/sbin/prepare-postgresql-data-volume.sh]
   - [bash, /usr/local/sbin/bootstrap-directus-postgres.sh]
   - [systemctl, daemon-reload]
