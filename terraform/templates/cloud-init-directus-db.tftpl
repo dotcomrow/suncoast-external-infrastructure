@@ -44,8 +44,9 @@ write_files:
       apt-get update
       # Install the requested major directly. Do not install the moving
       # `postgresql` meta-package, which would pull the newest PGDG major.
-      apt-get install -y postgresql-18 postgresql-client-18
+      apt-get install -y postgresql-18 postgresql-client-18 postgresql-18-pgvector
       test "$(/usr/lib/postgresql/18/bin/postgres --version | awk '{print $3}' | cut -d. -f1)" = "18"
+      test -f /usr/share/postgresql/18/extension/vector.control
 
   - path: /usr/local/sbin/prepare-postgresql-data-volume.sh
     owner: root:root
